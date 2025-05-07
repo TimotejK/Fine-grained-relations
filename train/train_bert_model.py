@@ -1,4 +1,5 @@
 import torch
+import datetime
 from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -128,13 +129,22 @@ def train(model, dataset, dataset_test, epochs=50, batch_size=2, lr=2e-5, projec
         # Evaluate after every epoch
 
         eval_loss, eval_metrics = evaluate(model, dataloader_test, simplified_model=simplified_model)
+        with open("runs.txt", "a") as log_file:
+            log_entry = f"{eval_metrics}\n"
+            log_file.write(log_entry)
         wandb.log({"epoch": epoch + 1, "eval_loss": eval_loss, "eval_metrics": eval_metrics})
 
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataloader):.4f}")
 
     wandb.finish()
+    return eval_metrics
 
 def train_and_evaluate_model_with_parameters(config):
+    # Log the configuration to a file with the run date and time
+    log_entry = f"\nRun Date and Time: {datetime.datetime.now().isoformat()}\nConfig: {config.get_config_as_string()}\n"
+    with open("runs.txt", "a") as log_file:
+        log_file.write(log_entry)
+
     if config.model_type == "simplified_transformer":
         model = SimplifiedBertBasedModel.TimelineRegressor(config)
     elif config.model_type == "full_transformer":
@@ -143,7 +153,10 @@ def train_and_evaluate_model_with_parameters(config):
     dataframe_test = load_i2b2_absolute_data(test_split=True)
     dataset = TimelineDataset(dataframe)
     dataset_test = TimelineDataset(dataframe_test)
-    train(model, dataset, dataset_test, simplified_model=config.model_type == "simplified_transformer")
+    final_results = train(model, dataset, dataset_test, simplified_model=config.model_type == "simplified_transformer", epochs=20)
+    with open("runs.txt", "a") as log_file:
+        log_entry = f"Run finished. Final results: {final_results}\n"
+        log_file.write(log_entry)
 
 if __name__ == '__main__':
     # emilyalsentzer/Bio_ClinicalBERT
