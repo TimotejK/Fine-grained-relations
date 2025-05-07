@@ -4,10 +4,8 @@ from torch.utils.data import Dataset
 import torch
 
 class TimelineDataset(Dataset):
-    def __init__(self, dataframe, tokenizer, max_length=512):
+    def __init__(self, dataframe):
         self.df = dataframe
-        self.tokenizer = tokenizer
-        self.max_length = max_length
 
     def __len__(self):
         return len(self.df)
@@ -21,34 +19,28 @@ class TimelineDataset(Dataset):
 
     def convert_prediction_to_relative_time_minutes(self, prediction):
         minutes_in_unit = [365*24*60, 30*24*60, 24*60, 60, 1] # year, month, day, hour, minute
-        start_unit = np.argmax(prediction["start_unit_logits"], axis=1)
-        end_unit = np.argmax(prediction["end_unit_logits"], axis=1)
-        start_minutes = [minutes_in_unit[unit] * value for unit, value in zip(start_unit, prediction["start_value"])]
-        start_minutes_lower = [minutes_in_unit[unit] * (value-1) for unit, value in zip(start_unit, prediction["start_value"])]
-        start_minutes_upper = [minutes_in_unit[unit] * (value+1) for unit, value in zip(start_unit, prediction["start_value"])]
-        end_minutes = [minutes_in_unit[unit] * value for unit, value in zip(end_unit, prediction["end_value"])]
-        end_minutes_lower = [minutes_in_unit[unit] * (value-1) for unit, value in zip(end_unit, prediction["end_value"])]
-        end_minutes_upper = [minutes_in_unit[unit] * (value+1) for unit, value in zip(end_unit, prediction["end_value"])]
+        start_unit = np.argmax(prediction["start_unit_logits"].detach().cpu(), axis=1)
+        end_unit = np.argmax(prediction["end_unit_logits"].detach().cpu(), axis=1)
+        start_minutes = [minutes_in_unit[unit] * value for unit, value in zip(start_unit, prediction["start_value"].detach().cpu())]
+        start_minutes_lower = [minutes_in_unit[unit] * (value-1) for unit, value in zip(start_unit, prediction["start_value"].detach().cpu())]
+        start_minutes_upper = [minutes_in_unit[unit] * (value+1) for unit, value in zip(start_unit, prediction["start_value"].detach().cpu())]
+        end_minutes = [minutes_in_unit[unit] * value for unit, value in zip(end_unit, prediction["end_value"].detach().cpu())]
+        end_minutes_lower = [minutes_in_unit[unit] * (value-1) for unit, value in zip(end_unit, prediction["end_value"].detach().cpu())]
+        end_minutes_upper = [minutes_in_unit[unit] * (value+1) for unit, value in zip(end_unit, prediction["end_value"].detach().cpu())]
         return (start_minutes, start_minutes_lower, start_minutes_upper), (end_minutes, end_minutes_lower, end_minutes_upper)
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         text = row['text']  # assumes event context is in here
-        inputs = self.tokenizer(
-            text,
-            padding='max_length',
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors="pt"
-        )
 
         start_unit, start_value = self.convert_minutes_to_unit_value(row['start_time_minutes'] - row['admission_date_minutes'])
         end_unit, end_value = self.convert_minutes_to_unit_value(row['end_time_minutes'] - row['admission_date_minutes'])
         duration_unit, duration_value = self.convert_minutes_to_unit_value(row['duration_minutes'])
 
         return {
-            'input_ids': inputs['input_ids'].squeeze(0),
-            'attention_mask': inputs['attention_mask'].squeeze(0),
+            # 'input_ids': inputs['input_ids'].squeeze(0),
+            # 'attention_mask': inputs['attention_mask'].squeeze(0),
+            "text": text,
             "start_unit": start_unit,
             "start_value": start_value,
             "end_unit": end_unit,
@@ -65,4 +57,8 @@ class TimelineDataset(Dataset):
             "duration_upper_minutes": row['duration_upper_minutes'],
             "duration_lower_minutes": row['duration_lower_minutes'],
             "admission_date_minutes": row['admission_date_minutes'],
+            "start_char": row['start_char'],
+            "end_char": row['end_char'],
+            # "start_token": start_token,
+            # "end_token": end_token,
         }

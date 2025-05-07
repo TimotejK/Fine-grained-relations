@@ -53,7 +53,7 @@ def find_matching_tsv(tsv_folder, summary_id):
     Finds any TSV file that ends with _{summary_id}.tsv (e.g., A1_33.tsv for summary 33).
     Returns the path to the first match found.
     """
-    pattern = re.compile(rf'^.+_{summary_id}\.tsv$')
+    pattern = re.compile(rf'(^.+_|){summary_id}\.tsv$')
     for fname in os.listdir(tsv_folder):
         if pattern.match(fname):
             return os.path.join(tsv_folder, fname)
@@ -260,9 +260,12 @@ def extract_admission_discharge_dates(df):
     return df
 
 
-def load_i2b2_absolute_data():
+def load_i2b2_absolute_data(test_split=False):
     # Example usage
-    xml_folder = 'data/i2b2'
+    if test_split:
+        xml_folder = 'data/i2b2-test'
+    else:
+        xml_folder = 'data/i2b2'
     tsv_folder = 'data/i2b2-absolute'
     df = build_event_dataframe(xml_folder, tsv_folder)
 
@@ -273,5 +276,5 @@ def load_i2b2_absolute_data():
 
 
 if __name__ == '__main__':
-    df = load_i2b2_absolute_data()
+    df = load_i2b2_absolute_data(test_split=True)
     print(df.columns)
