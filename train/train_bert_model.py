@@ -1,3 +1,5 @@
+import json
+
 import torch
 import datetime
 from transformers import AutoTokenizer
@@ -47,6 +49,7 @@ def evaluate(model, dataloader, simplified_model) -> (float, dict):
                     start_char_index=batch['start_char'],
                     end_char_index=batch['end_char']
                 )
+                total_eval_loss += outputs['loss'].item()
                 start_minutes = (outputs['predictions'][:, 0].cpu() + admission_times).tolist()
                 end_minutes = (outputs['predictions'][:, 1].cpu() + admission_times).tolist()
                 start_minutes = [(t, t - 60, t+60) for t in start_minutes] # TODO implement better lower and upper bound guess
@@ -77,6 +80,7 @@ def evaluate(model, dataloader, simplified_model) -> (float, dict):
 def train(model, dataset, dataset_test, epochs=50, batch_size=2, lr=2e-5, project_name="timeline_training", simplified_model=False):
 
     import wandb
+    model.to(device)
     wandb.init(project=project_name, config={
         "model_name": model.encoder.__class__.__name__,
         "epochs": epochs,
@@ -87,7 +91,6 @@ def train(model, dataset, dataset_test, epochs=50, batch_size=2, lr=2e-5, projec
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     dataloader_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    model.to(device)
     model.train()
 
     for epoch in range(epochs):
@@ -121,9 +124,7 @@ def train(model, dataset, dataset_test, epochs=50, batch_size=2, lr=2e-5, projec
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-            eval_loss, eval_metrics = evaluate(model, dataloader_test, simplified_model=simplified_model)
-
-
+            # print("loss: ", total_loss, "average:", total_loss / len(dataloader))
         # Log training loss
         wandb.log({"epoch": epoch + 1, "train_loss": total_loss / len(dataloader)})
         # Evaluate after every epoch
@@ -135,7 +136,12 @@ def train(model, dataset, dataset_test, epochs=50, batch_size=2, lr=2e-5, projec
         wandb.log({"epoch": epoch + 1, "eval_loss": eval_loss, "eval_metrics": eval_metrics})
 
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataloader):.4f}")
-
+    torch.save(model.state_dict(), "Fine_grained_relation_model_state_dict.pth")
+    torch.save(model, "Fine_grained_relation_model.pth")
+    config = model.config  # Example: transformers model
+    with open("model_config.json", "w") as f:
+        json.dump(config.to_dict(), f)
+    model.tokenizer.save_pretrained("Fine_grained_relation_model_tokenizer")
     wandb.finish()
     return eval_metrics
 

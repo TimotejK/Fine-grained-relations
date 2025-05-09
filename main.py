@@ -7,7 +7,9 @@ from transformers import AutoTokenizer
 from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
 from models import BertBasedModel
+from models.model_config import ModelConfig
 from train import train_bert_model
+from train.train_bert_model import train_and_evaluate_model_with_parameters
 
 
 def main():
@@ -27,15 +29,10 @@ def main():
     # Execute the appropriate script based on the argument
     if args.script == "train_bert_model":
         print("Running train_bert_model...")
-        # emilyalsentzer/Bio_ClinicalBERT
-        model_name = 'bert-base-uncased'
-        model = BertBasedModel.TimelineRegressor(model_name=model_name)
-        dataframe = load_i2b2_absolute_data(test_split=False)
-        dataframe_test = load_i2b2_absolute_data(test_split=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        dataset = TimelineDataset(dataframe, tokenizer)
-        dataset_test = TimelineDataset(dataframe_test, tokenizer)
-        train_bert_model.train(model, dataset, dataset_test)
+        config = ModelConfig()
+        train_and_evaluate_model_with_parameters(config)
+        config.simplified_transformer_config["pooling_strategy"] = "max"
+        train_and_evaluate_model_with_parameters(config)
 
 
 if __name__ == "__main__":

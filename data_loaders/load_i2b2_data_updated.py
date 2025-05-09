@@ -122,6 +122,7 @@ def format_duration(td):
 def compute_missing_values(df):
     df = df.copy()
 
+    rows_to_drop = []
     for i, row in df.iterrows():
         # Validate 'start_time' and 'end_time' before casting them to datetime
         start_time = None
@@ -187,8 +188,13 @@ def compute_missing_values(df):
                 upper = combine_distance(end_time - pd.to_datetime(row['end_upper']),
                                      parse_duration(row['duration_upper']) - parse_duration(row['duration']))
                 df.at[i, 'start_upper'] = (start_time + upper).strftime("%Y-%m-%d %H:%M")
+        else:
+            # print(f"Skipping row {i} with missing values: {row}")
+            rows_to_drop.append(i)
 
-    return df
+    df.drop(rows_to_drop, inplace=True)
+
+    return df.reset_index(drop=True)
 
 
 def expand_as_minutes(df):
@@ -225,8 +231,8 @@ def extract_admission_discharge_dates(df):
     BASE_DATETIME = pd.Timestamp("1900-01-01 00:00:00")
 
     # Define regex patterns for admission and discharge dates
-    admission_pattern = r"(?i)Admission\s*Date\s*:\s*\n?(?P<admission_date>(\d{1,4}[/-]\d{1,2}[/-]\d{2,4}))"
-    discharge_pattern = r"(?i)Discharge\s*Date\s*:\s*\n?(?P<discharge_date>(\d{1,4}[/-]\d{1,2}[/-]\d{2,4}))"
+    admission_pattern = r"(?i)Admission\s*Date\s*:\s*\n?(?P<admission_date>(\d{1,4}[/-]\d{1,2}[/-]\d{2,4}|\d{8}))"
+    discharge_pattern = r"(?i)Discharge\s*Date\s*:\s*\n?(?P<discharge_date>(\d{1,4}[/-]\d{1,2}[/-]\d{2,4}|\d{8}))"
 
     # Initialize new columns
     df['admission_date'] = None
@@ -240,13 +246,13 @@ def extract_admission_discharge_dates(df):
 
             # Extract the matched dates
             if admission_match:
-                time = pd.to_datetime(admission_match.group('admission_date'), format='%m-%d-%y', errors='coerce')
+                time = pd.to_datetime(admission_match.group('admission_date'), format='%m-%d-%y', errors='coerce') if '-' in admission_match.group('admission_date') else pd.to_datetime(admission_match.group('admission_date'), format='%Y%m%d', errors='coerce')
                 if not pd.notna(time):
                     time = pd.to_datetime(admission_match.group('admission_date'), errors='coerce')
                 df.at[i, 'admission_date'] = time
 
             if discharge_match:
-                time = pd.to_datetime(discharge_match.group('discharge_date'), format='%m-%d-%y', errors='coerce')
+                time = pd.to_datetime(discharge_match.group('discharge_date'), format='%m-%d-%y', errors='coerce') if '-' in discharge_match.group('discharge_date') else pd.to_datetime(discharge_match.group('discharge_date'), format='%Y%m%d', errors='coerce')
                 if not pd.notna(time):
                     time = pd.to_datetime(discharge_match.group('discharge_date'), errors='coerce')
                 df.at[i, 'discharge_date'] = time
