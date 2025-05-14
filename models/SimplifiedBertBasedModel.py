@@ -90,7 +90,7 @@ class TimelineRegressor(nn.Module):
         regression_outputs = self.regressor(embeddings)
 
         # Optionally calculate loss if labels are provided
-        label_scaling_factor = 1000 # based on paper https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9207839
+        label_scaling_factor = self.model_config.simplified_transformer_config["predicted_minutes_scaling_factor"] # based on paper https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9207839
         loss = None
         if labels is not None:
             loss_fn = nn.L1Loss()

@@ -1,9 +1,10 @@
 from sklearn.metrics import precision_score, recall_score, f1_score
 
-def compute_metrics(predicted_starts, predicted_ends, gold_starts, gold_ends):
+def compute_metrics(predicted_starts, predicted_ends, predicted_durations, gold_starts, gold_ends, gold_durations):
     assert len(predicted_starts) == len(predicted_ends) == len(gold_starts) == len(gold_ends), "All lists must be of equal length."
     correct_start = 0
     correct_end = 0
+    correct_duration = 0
     n = 0
     for i in range(len(predicted_starts)):
         if isinstance(predicted_starts[i], tuple):
@@ -24,18 +25,32 @@ def compute_metrics(predicted_starts, predicted_ends, gold_starts, gold_ends):
             pred_end_lower = predicted_ends[i] - 60
             pred_end_upper = predicted_ends[i] + 60
 
+        if isinstance(predicted_durations[i], tuple):
+            pred_dur_time = predicted_durations[i][0]
+            pred_dur_lower = predicted_durations[i][1]
+            pred_dur_upper = predicted_durations[i][2]
+        else:
+            pred_dur_time = predicted_durations[i]
+            pred_dur_lower = predicted_durations[i] - 60
+            pred_dur_upper = predicted_durations[i] + 60
+
         if gold_starts[i][1] <= pred_start_time <= gold_starts[i][2]:
             correct_start += 1
         if gold_ends[i][1] <= pred_end_time <= gold_ends[i][2]:
             correct_end += 1
+
+        if gold_durations[i][1] <= pred_dur_time <= gold_durations[i][2]:
+            correct_duration += 1
         n += 1
 
     return {
         "correct_start": correct_start,
         "correct_end": correct_end,
+        "correct_duration": correct_duration,
         "n": n,
         "precision_start": correct_start / n,
-        "precision_end": correct_end / n
+        "precision_end": correct_end / n,
+        "precision_duration": correct_duration / n
     }
             
 

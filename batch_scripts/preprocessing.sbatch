@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=fgtre-bert
-#SBATCH --time=1-00:00:00
+#SBATCH --job-name=preprocessing-i2b2
+#SBATCH --time=2-00:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --partition=frida
 #SBATCH --account=lpt-phd
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:L4:1
-#SBATCH -o bert_train.out
+#SBATCH --gres=gpu:A100_80GB:1
+#SBATCH -o preprocessing.out
 
 cd "${HOME}/Fine-grained-relations"
 
@@ -16,4 +16,4 @@ srun \
   -A lpt -p frida \
   --container-image /shared/home/timotej.knez/containers/modern_bert.sqfs \
   --container-mounts "$PWD":/workspace \
-  bash -c "cd /workspace; pip install dspy; python3 main.py --script train_bert_model"
+  bash -c "cd /workspace; apt update; apt install -y curl pciutils; curl -fsSL https://ollama.com/install.sh | sh; pip install dspy; python3 main.py --script preprocess"
