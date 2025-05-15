@@ -25,8 +25,11 @@ fourbit_models = [
     "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" # NEW! Llama 3.3 70B!
 ] # More models at https://huggingface.co/unsloth
 
+model_name = "unsloth/Llama-3.2-3B-Instruct"
+chat_template = "llama-3.1"
+
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/Llama-3.2-3B-Instruct", # or choose "unsloth/Llama-3.2-1B-Instruct"
+    model_name = model_name, # or choose "unsloth/Llama-3.2-1B-Instruct"
     max_seq_length = max_seq_length,
     dtype = dtype,
     load_in_4bit = load_in_4bit,
@@ -48,3 +51,18 @@ model = FastLanguageModel.get_peft_model(
     use_rslora = False,  # We support rank stabilized LoRA
     loftq_config = None, # And LoftQ
 )
+
+# use chat template
+from unsloth.chat_templates import get_chat_template
+
+tokenizer = get_chat_template(
+    tokenizer,
+    chat_template = chat_template,
+)
+
+def formatting_prompts_func(examples):
+    convos = examples["conversations"]
+    texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
+    return { "text" : texts, }
+pass
+

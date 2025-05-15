@@ -174,7 +174,7 @@ def save_model(model, tokenizer, model_name):
 
 def load_model(model_name, device=torch.device('cpu')):
     with open(f"{model_name}_config.json", "r") as f:
-        config = json.load(f)
+        config = ModelConfig.from_dict(json.load(f))
     model = BertBasedModel.TimelineRegressor(model_name=config.model_type)
     model.load_state_dict(torch.load(f"{model_name}_state_dict.pth", map_location=device))
     tokenizer = AutoTokenizer.from_pretrained(model_name)

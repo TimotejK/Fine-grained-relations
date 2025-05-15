@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import xml.etree.ElementTree as ET
 
+import torch
 from dateutil.relativedelta import relativedelta
 
 
@@ -282,5 +283,7 @@ def load_i2b2_absolute_data(test_split=False):
 
 
 if __name__ == '__main__':
-    df = load_i2b2_absolute_data(test_split=True)
+    df = load_i2b2_absolute_data(test_split=False)
+    df = df.iloc[:10]
+    torch.save(df, 'demo_data.pt')
     print(df.columns)

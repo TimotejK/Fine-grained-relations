@@ -53,7 +53,7 @@ class ZeroShotPromptingModel(AbsoluteTimePredictor):
         else:
             prompt = (
                 "Below is a patient discharge summary. Guess how long before or after the admission date did the event "
-                "marked with <event> <point>. Provide your guess as a number of months, days, hours, or minutes.\n\n"
+                "marked with <event> tag {point}. Provide your guess as a number of months, days, hours, or minutes.\n\n"
                 "{summary}\n")
             response = self.llm.predict(prompt.format(summary=summary_with_event, point=prediction_point))
 

@@ -6,14 +6,14 @@ class ModelConfig:
             "pooling_strategy": "mean", # mean, max, cls [use cls token instead of event embeddings]
             "handle_too_long_text": "error", # error, cut
             "mark_events": True, # add <event> markers around te event: True, False
-            "predicted_minutes_scaling_factor": 10000 # divide the number of minutes by this value when computing loss to stabilize training
+            "predicted_minutes_scaling_factor": 1 # divide the number of minutes by this value when computing loss to stabilize training
         }
         self.training_hyperparameters = {
             "learning_rate": 2e-3,
             "batch_size": 16,
             "epochs": 30,
             "seed": 42,
-            "weight_decay": 0.001,
+            "weight_decay": 0.0001,
             "scheduler_config": {
                 "step_size": 10, # every 10 epochs multiply learning rate by 0.1
                 "gamma": 0.5
@@ -54,3 +54,23 @@ class ModelConfig:
             "simplified_transformer_config": self.simplified_transformer_config,
             "training_hyperparameters": self.training_hyperparameters,
         }
+
+    @classmethod
+    def from_dict(cls, config_dict):
+        """
+        Creates an instance of ModelConfig and sets its configuration from a dictionary.
+    
+        Args:
+            config_dict (dict): A dictionary containing the model configuration.
+    
+        Returns:
+            ModelConfig: An instance of ModelConfig with the configuration set.
+        """
+        instance = cls()
+        if "model_type" in config_dict:
+            instance.model_type = config_dict["model_type"]
+        if "simplified_transformer_config" in config_dict:
+            instance.simplified_transformer_config.update(config_dict["simplified_transformer_config"])
+        if "training_hyperparameters" in config_dict:
+            instance.training_hyperparameters.update(config_dict["training_hyperparameters"])
+        return instance
