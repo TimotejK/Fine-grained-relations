@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
 from data_loaders.preprocessing import preprocess
+from llm_finetuning.finetuning import finetune_on_i2b2
 from models import BertBasedModel
 from models.model_config import ModelConfig
 from train import train_bert_model
@@ -21,7 +22,7 @@ def main():
     parser.add_argument(
         "--script",
         type=str,
-        choices=["train_bert_model", "preprocess"],
+        choices=["train_bert_model", "preprocess", "finetune_llm"],
         help="The script to run. Currently supported: train_bert_model"
     )
 
@@ -43,10 +44,10 @@ def main():
         thread.start()
         time.sleep(5)
         subprocess.run(["ollama", "pull", "gemma3:27b"])
-        df = load_i2b2_absolute_data(test_split=False)
-
-        df = df.apply(preprocess, axis=1)
-        torch.save(df, "data/i2b2_train_absolute_preprocessed.pt")
+        # df = load_i2b2_absolute_data(test_split=False)
+        #
+        # df = df.apply(preprocess, axis=1)
+        # torch.save(df, "data/i2b2_train_absolute_preprocessed.pt")
 
         df = load_i2b2_absolute_data(test_split=True)
 
@@ -56,6 +57,8 @@ def main():
     if args.script == "train_bert_model":
         print("Running train_bert_model...")
         config = ModelConfig()
+        config.training_hyperparameters['batch_size'] = 16
+        config.simplified_transformer_config['individually_train_regressor_number'] = 0 # train only the start time value and ignore the rest
         train_and_evaluate_model_with_parameters(config)
 
         config.simplified_transformer_config["pooling_strategy"] = "mean"
@@ -65,6 +68,9 @@ def main():
         config.simplified_transformer_config["pooling_strategy"] = "max"
         config.simplified_transformer_config["model_name"] = "Simonlee711/Clinical_ModernBERT"
         train_and_evaluate_model_with_parameters(config)
+
+    if args.script == "finetune_llm":
+        finetune_on_i2b2()
 
 
 if __name__ == "__main__":

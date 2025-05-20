@@ -1,0 +1,21 @@
+{
+  "model_type": "simplified_transformer",
+  "training_hyperparameters": {
+      "seed": 42,
+      "epochs": 30,
+      "batch_size": 16,
+      "weight_decay": 0.0001,
+      "learning_rate": 0.002,
+      "scheduler_config": {
+        "gamma": 0.5,
+        "step_size": 10
+      }
+  },
+  "simplified_transformer_config": {
+      "model_name": "answerdotai/ModernBERT-base",
+      "mark_events": true,
+      "pooling_strategy": "mean",
+      "handle_too_long_text": "error",
+      "predicted_minutes_scaling_factor": 10000
+  }
+}

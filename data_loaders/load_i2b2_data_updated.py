@@ -211,7 +211,6 @@ def expand_as_minutes(df):
     for col in ['start_time', 'start_upper', 'start_lower', 'end_time', 'end_upper', 'end_lower']:
         if col in df.columns:
             # print(col)
-            df[df['end_upper'] == '2208-03-30 13:00']
             df[f'{col}_minutes'] = pd.to_datetime(df[col], errors='coerce').sub(
                 BASE_DATETIME).dt.total_seconds() // 60
 

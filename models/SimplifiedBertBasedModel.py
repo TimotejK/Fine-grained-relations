@@ -13,7 +13,6 @@ class TimelineRegressor(nn.Module):
         self.encoder = AutoModel.from_pretrained(model_config.simplified_transformer_config["model_name"])
         self.tokenizer = AutoTokenizer.from_pretrained(model_config.simplified_transformer_config["model_name"])
 
-
         hidden_size = self.config.hidden_size
         intermediate_size = 128
 
@@ -22,27 +21,32 @@ class TimelineRegressor(nn.Module):
             nn.Linear(hidden_size, intermediate_size),
             nn.ReLU(),
             nn.Dropout(0.1),
+            nn.Linear(intermediate_size, intermediate_size),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(intermediate_size, 3)  # Predict start, end, and duration
         )
 
         # Removed individual regressors for simplicity
 
     def tokenize(self, text, start_char, end_char):
-
+        start_char_copy = [int(s) for s in start_char]
+        end_char_copy = [int(e) for e in end_char]
         if self.model_config.simplified_transformer_config["mark_events"]:
             modified_texts = []
+
             for i, t in enumerate(text):
                 event_marker_start = "<event>"
                 event_marker_end = "</event>"
                 t = (
-                        t[:start_char[i]]
+                        t[:start_char_copy[i]]
                         + event_marker_start
-                        + t[start_char[i]:end_char[i]]
+                        + t[start_char_copy[i]:end_char_copy[i]]
                         + event_marker_end
-                        + t[end_char[i]:]
+                        + t[end_char_copy[i]:]
                 )
-                start_char[i] += len(event_marker_start)
-                end_char[i] += len(event_marker_start)
+                start_char_copy[i] += len(event_marker_start)
+                end_char_copy[i] += len(event_marker_start)
                 modified_texts.append(t)
             text = modified_texts
 
@@ -61,15 +65,16 @@ class TimelineRegressor(nn.Module):
         start_tokens = []
         end_tokens = []
         for i in range(len(inputs["input_ids"])):
-            start_tokens.append(inputs.char_to_token(i, start_char[i]))
-            end_tokens.append(inputs.char_to_token(i, end_char[i]))
+            start_tokens.append(inputs.char_to_token(i, start_char_copy[i]))
+            end_tokens.append(inputs.char_to_token(i, end_char_copy[i]))
 
         return {**inputs, "start_token": start_tokens, "end_token": end_tokens, "modified_text": text}
 
     def forward(self, text, labels=None, start_char_index=None, end_char_index=None):
         device = self.encoder.device
         tokenized = self.tokenize(text, start_char_index, end_char_index)
-        outputs = self.encoder(input_ids=tokenized['input_ids'].to(device), attention_mask=tokenized['attention_mask'].to(device))
+        outputs = self.encoder(input_ids=tokenized['input_ids'].to(device),
+                               attention_mask=tokenized['attention_mask'].to(device))
         if self.model_config.simplified_transformer_config["pooling_strategy"] == "cls":
             embeddings = outputs.last_hidden_state[:, 0, :]  # CLS token
         else:
@@ -95,8 +100,12 @@ class TimelineRegressor(nn.Module):
         if labels is not None:
             loss_fn = nn.L1Loss()
             labels = [label / label_scaling_factor for label in labels]
-            loss = loss_fn(regression_outputs, torch.stack(labels).t().float().to(device))
-
+            # Only compute loss for the first value
+            if self.model_config.simplified_transformer_config['individually_train_regressor_number'] >= 0:
+                regressor_index = self.model_config.simplified_transformer_config['individually_train_regressor_number']
+                loss = loss_fn(regression_outputs[:, regressor_index], labels[regressor_index].t().float().to(device))
+            else:
+                loss = loss_fn(regression_outputs, torch.stack(labels).t().float().to(device))
         if loss is not None and torch.isnan(loss):
             print(loss)
             print(regression_outputs)
