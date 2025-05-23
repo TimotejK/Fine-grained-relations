@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import pandas as pd
 
 
-class EventTimePredictor:
+class EventTimePredictorBatch:
     def __init__(self, llm_api, use_structured_response=False):
         self.llm = llm_api
         self.time_units_to_minutes = {
@@ -82,7 +82,7 @@ Each event is marked with a tag such as `<event1>`, `<event2>`, and so on.
 
 **Task:** For each annotated event, predict when it **started** and **ended** relative to the **admission date**. Specify the time difference in years, months, days, hours, and minutes.
 
-**Output Format:** Return a JSON array where each item is an object with the following structure:
+**Output Format:** Return a JSON object containing an array with the following structure:
 
 ```json
 "event_times": [

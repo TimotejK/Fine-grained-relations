@@ -61,7 +61,19 @@ class OpenAIModel:
             return cached_response
 
         messages = [
-            {"role": "system", "content": "You are a helpful assistant that predicts event times in the format 'PREDICTION: value unit direction' (e.g. 'PREDICTION: 3 minutes before')."},
+            {"role": "system", "content": """
+You are a helpful and precise assistant that analyzes clinical documents. When given a patient discharge summary with annotated events and a reference admission date, your task is to determine the time intervals between each event's start and end relative to the admission date.
+
+For each event, calculate and clearly state how much time before or after the admission date the event started and ended. Use exact durations in the format:
+
+```
+event1: Start: X months, Y days, Z hours, W minutes after/before; 
+        End: A months, B days, C hours, D minutes after/before
+event2: ...
+```
+
+Always use the admission date as the reference point. Wait for a user message that includes the summary and annotations before responding.
+"""},
             {"role": "user", "content": prompt},
         ]
 

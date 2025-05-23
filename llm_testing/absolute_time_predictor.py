@@ -15,7 +15,7 @@ class AbsoluteTimePredictor:
     def predict(self, row):
         raise NotImplementedError
 
-class ZeroShotPromptingModel(AbsoluteTimePredictor):
+class EventTimePredictorSingle(AbsoluteTimePredictor):
     def __init__(self, llm_api, use_structured_response=False):
         self.llm = llm_api
         self.time_units_to_minutes = {

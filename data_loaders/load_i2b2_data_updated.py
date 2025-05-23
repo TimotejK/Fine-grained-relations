@@ -284,7 +284,7 @@ def load_i2b2_absolute_data(test_split=False):
 
 
 if __name__ == '__main__':
-    df = load_i2b2_absolute_data(test_split=False)
-    df = df.iloc[:10]
-    torch.save(df, 'demo_data.pt')
+    df = load_i2b2_absolute_data(test_split=True)
+    # df = df.iloc[:10]
+    torch.save(df, 'test_data.pt')
     print(df.columns)

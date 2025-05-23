@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
 from data_loaders.preprocessing import preprocess
+from evaluation.evaluate_llm_prompting import evaluate_all_llms
 from llm_finetuning.finetuning import finetune_on_i2b2
 from models import BertBasedModel
 from models.model_config import ModelConfig
@@ -22,8 +23,14 @@ def main():
     parser.add_argument(
         "--script",
         type=str,
-        choices=["train_bert_model", "preprocess", "finetune_llm"],
-        help="The script to run. Currently supported: train_bert_model"
+        choices=["train_bert_model", "preprocess", "finetune_llm", "prompting_llm"],
+        help="The script to run. Currently supported: train_bert_model, preprocess, finetune_llm, prompting_llm"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="unsloth/Meta-Llama-3.1-8B",
+        help=""
     )
 
     # Parse arguments
@@ -70,7 +77,18 @@ def main():
         train_and_evaluate_model_with_parameters(config)
 
     if args.script == "finetune_llm":
-        finetune_on_i2b2()
+        finetune_on_i2b2(args.model)
+
+    if args.script == "prompting_llm":
+        def run_ollama_serve():
+            subprocess.Popen(["ollama", "serve"])
+
+        thread = threading.Thread(target=run_ollama_serve)
+        thread.start()
+        time.sleep(5)
+        subprocess.run(["ollama", "pull", "gemma3:27b"])
+
+        evaluate_all_llms()
 
 
 if __name__ == "__main__":

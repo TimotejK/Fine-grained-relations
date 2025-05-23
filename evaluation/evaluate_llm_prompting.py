@@ -1,12 +1,15 @@
 import os
 
+import torch
+
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
-from evaluation.metrics import compute_metrics
-from llm_testing.absolute_time_predictor import ZeroShotPromptingModel
+from evaluation.error_analysis import save_for_error_analysis
+from evaluation.metrics import compute_metrics, store_prediction_for_error_analysis
+from llm_testing.absolute_time_predictor import EventTimePredictorSingle
 from llm_testing.llm_models import local_llm
 from llm_testing.llm_models.chatGPT import OpenAIModel
 from llm_testing.llm_models.gemini import GeminiModel
-from llm_testing.multiple_times_predictor import EventTimePredictor
+from llm_testing.multiple_times_predictor import EventTimePredictorBatch
 
 
 def transform_llm_prediction_to_evaluation_format(prediction, admission_time):
@@ -59,7 +62,7 @@ def log_text(line, log_file="llm_evaluation.log"):
 
 def evaluate_llm_prompting(predictor, model_id):
     dataframe_test = load_i2b2_absolute_data(test_split=True)
-    dataframe_test = dataframe_test.iloc[:100]
+    dataframe_test = dataframe_test[dataframe_test["document_id"].isin(['101', '108', '113'])].reset_index(drop=True)
     print(f"Testing data size: {len(dataframe_test)}")
 
     predictions_starts = []
@@ -75,15 +78,17 @@ def evaluate_llm_prompting(predictor, model_id):
         predictions_ends.append(e)
         predictions_durations.append(d)
 
-        s,e,d = transform_row_to_evaluation_format(row)
-        gold_starts.append(s)
-        gold_ends.append(e)
-        gold_durations.append(d)
+        gs,ge,gd = transform_row_to_evaluation_format(row)
+        gold_starts.append(gs)
+        gold_ends.append(ge)
+        gold_durations.append(gd)
         eval_metrics_partial = compute_metrics(predictions_starts, predictions_ends, predictions_durations, gold_starts,
                                        gold_ends,
                                        gold_durations)
         print(f"{model_id} --- Partial metrics: {eval_metrics_partial}")
         log_text(f"{model_id} --- Partial metrics: {eval_metrics_partial}", log_file=f"{model_id}_evaluation.log")
+        document_id = row["document_id"]
+        store_prediction_for_error_analysis(model_id, document_id, row["text"], row["event_id"], row["start_char"], row["end_char"], s,e,d,gs,ge,gd)
 
     eval_metrics = compute_metrics(predictions_starts, predictions_ends, predictions_durations, gold_starts, gold_ends,
                                    gold_durations)
@@ -94,7 +99,7 @@ def evaluate_llm_prompting(predictor, model_id):
 
 def evaluate_llm_prompting_batch_model(predictor, model_id):
     dataframe_test = load_i2b2_absolute_data(test_split=True)
-    dataframe_test = dataframe_test.iloc[:100]
+    # dataframe_test = dataframe_test.iloc[:100]
     print(f"Testing data size: {len(dataframe_test)}")
 
     predictions_starts = []
@@ -108,12 +113,24 @@ def evaluate_llm_prompting_batch_model(predictor, model_id):
         for prediction in predictions:
             pred_start = prediction["predicted_start_time_minutes"]
             pred_end = prediction["predicted_end_time_minutes"]
-            predictions_starts.append((pred_start, pred_start + 60, pred_start - 60))
-            predictions_ends.append((pred_end, pred_end + 60, pred_end - 60))
-            predictions_durations.append((pred_end - pred_start, pred_end - pred_start - 60, pred_end - pred_start + 60))
-            gold_starts.append((prediction["start_time_minutes"], prediction["start_upper_minutes"], prediction["start_lower_minutes"]))
-            gold_ends.append((prediction["end_time_minutes"], prediction["end_upper_minutes"], prediction["end_lower_minutes"]))
-            gold_durations.append((prediction["duration_minutes"], prediction["duration_upper_minutes"], prediction["duration_lower_minutes"]))
+            s = (pred_start, pred_start + 60, pred_start - 60)
+            predictions_starts.append(s)
+            e = (pred_end, pred_end + 60, pred_end - 60)
+            predictions_ends.append(e)
+            d = (pred_end - pred_start, pred_end - pred_start - 60, pred_end - pred_start + 60)
+            predictions_durations.append(d)
+            gs = (prediction["start_time_minutes"], prediction["start_upper_minutes"], prediction["start_lower_minutes"])
+            gold_starts.append(gs)
+            ge = (prediction["end_time_minutes"], prediction["end_upper_minutes"], prediction["end_lower_minutes"])
+            gold_ends.append(ge)
+            gd = (prediction["duration_minutes"], prediction["duration_upper_minutes"], prediction["duration_lower_minutes"])
+            gold_durations.append(gd)
+            store_prediction_for_error_analysis(model_id, document_id, dataframe_test[dataframe_test["document_id"] == document_id].iloc[0]["text"],
+                    prediction["event_id"],
+                    int(dataframe_test[(dataframe_test["document_id"] == document_id) & (dataframe_test["event_id"] == prediction["event_id"])].iloc[0]["start_char"]),
+                    int(dataframe_test[(dataframe_test["document_id"] == document_id) & (dataframe_test["event_id"] == prediction["event_id"])].iloc[0]["end_char"]),
+                    s,e,d,gs,ge,gd)
+
         eval_metrics_partial = compute_metrics(predictions_starts, predictions_ends, predictions_durations, gold_starts,
                                                gold_ends, gold_durations)
         print(f"{model_id} --- Partial metrics: {eval_metrics_partial}")
@@ -134,17 +151,18 @@ def evaluate_all_llms():
     # evaluate_llm_prompting(predictor, model_id="gemini_individual_structured")
     api_key = os.getenv("OPENAI_API_KEY")
     model = OpenAIModel(api_key=api_key)
-    # predictor = ZeroShotPromptingModel(model, use_structured_response=False)
-    # evaluate_llm_prompting(predictor, model_id="chatgpt_individual_plain")
-    # predictor = ZeroShotPromptingModel(model, use_structured_response=True)
-    # evaluate_llm_prompting(predictor, model_id="chatgpt_individual_structured")
-    # model = local_llm.OllamaModel(model_name="gemma3:27b")
-    # predictor = ZeroShotPromptingModel(model, use_structured_response=False)
-    # evaluate_llm_prompting(predictor, model_id="local_gemma_individual_plain")
-    # predictor = ZeroShotPromptingModel(model, use_structured_response=True)
-    # evaluate_llm_prompting(predictor, model_id="local_gemma_individual_structured")
+    predictor = EventTimePredictorSingle(model, use_structured_response=False)
+    evaluate_llm_prompting(predictor, model_id="chatgpt_individual_plain")
+    predictor = EventTimePredictorSingle(model, use_structured_response=True)
+    evaluate_llm_prompting(predictor, model_id="chatgpt_individual_structured")
 
-    predictor = EventTimePredictor(model, use_structured_response=True)
+    model = local_llm.OllamaModel(model_name="gemma3:27b")
+    predictor = EventTimePredictorSingle(model, use_structured_response=False)
+    evaluate_llm_prompting(predictor, model_id="local_gemma_individual_plain")
+    predictor = EventTimePredictorSingle(model, use_structured_response=True)
+    evaluate_llm_prompting(predictor, model_id="local_gemma_individual_structured")
+
+    predictor = EventTimePredictorBatch(model, use_structured_response=True)
     evaluate_llm_prompting_batch_model(predictor, model_id="chatgpt_batch_structured")
 if __name__ == '__main__':
     evaluate_all_llms()

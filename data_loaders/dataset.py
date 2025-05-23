@@ -64,15 +64,16 @@ class TimelineDataset(Dataset):
         row = self.df.iloc[idx]
         question = ("You are given a patient discharge summary. An event of interest is marked within `<event>` tags in the text. "
                     "Your task is to estimate when this event started and ended relative to the patient's admission date.)\n"
-                    "Provide your estimates **as clearly formatted time intervals** (e.g., \"START: 2 days before admission\"," 
-                    "\"END: 3 hours after admission\"). If exact timing is unclear, provide your best guess based on the available information.\n")
+                    "Provide your estimates **as clearly formatted time intervals** (e.g., \"START: 2 days before admission, " 
+                    "END: 3 hours after admission\"). If exact timing is unclear, provide your best guess based on the available information.\n")
                     # "**Text:**\n"
                     # f"{row['text']}\n")
         answer = "START: " + self.convert_time_in_minutes_to_description(row["start_time_minutes"]) + ", END: " + self.convert_time_in_minutes_to_description(row["end_time_minutes"])
         return {
             "output": answer,
             "input": row['text'],
-            "instruction": question
+            "instruction": question,
+            "row": row.to_dict()
         }
 
     def __getitem__(self, idx):

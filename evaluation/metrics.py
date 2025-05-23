@@ -1,4 +1,25 @@
+import torch
 from sklearn.metrics import precision_score, recall_score, f1_score
+
+documents_results = {}
+def store_prediction_for_error_analysis(model_id, document_id, text, event_id, event_char_start, event_char_end, predicted_start, predicted_end, predicted_duration, gold_start, gold_end, gold_duration):
+    global documents_results
+    if document_id not in documents_results:
+        documents_results[document_id] = {"events": [], "text": text}
+    event_results = {
+        "event_id": event_id,
+        "event_char_start": event_char_start,
+        "event_char_end": event_char_end,
+        "pred_start": predicted_start,
+        "pred_end": predicted_end,
+        "pred_duration": predicted_duration,
+        "gold_start": gold_start,
+        "gold_end": gold_end,
+        "gold_duration": gold_duration,
+    }
+    documents_results[document_id]["events"].append(event_results)
+    torch.save(documents_results, f"error_analysis_{model_id}.pt")
+
 
 def compute_metrics(predicted_starts, predicted_ends, predicted_durations, gold_starts, gold_ends, gold_durations):
     assert len(predicted_starts) == len(predicted_ends) == len(gold_starts) == len(gold_ends), "All lists must be of equal length."

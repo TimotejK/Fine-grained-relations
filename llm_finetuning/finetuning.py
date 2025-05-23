@@ -1,163 +1,296 @@
 import os
+import re
 
+import wandb
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, BitsAndBytesConfig, LlamaForCausalLM, \
-    LlamaTokenizer
-from trl import SFTTrainer
+from unsloth import FastLanguageModel
 import torch
-import pandas as pd
-from peft import LoraConfig
-import bitsandbytes as bnb
-
+from trl import SFTTrainer
+from transformers import TrainingArguments
+from unsloth import is_bfloat16_supported
+from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
+from evaluation.metrics import compute_metrics, store_prediction_for_error_analysis
+from unsloth.chat_templates import get_chat_template
+from unsloth.chat_templates import standardize_data_formats
+from unsloth.chat_templates import train_on_responses_only
+from trl import SFTTrainer, SFTConfig
+
+folder = "./data/"
+model_id = "Meta-Llama-3.1-8B-finetuned"
+alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+    ### Instruction:
+    {}
+
+    ### Input:
+    {}
+
+    ### Response:
+    {}"""
+EOS_TOKEN = None  # Must add EOS_TOKEN
 
 
-# --- Time conversion function ---
-time_units_to_minutes = {
-    "minute": 1,
-    "hour": 60,
-    "day": 1440,
-    "month": 43200,
-    "year": 1440 * 365,
-}
-def convert_time_in_minutes_to_description(time_in_minutes):
-    before = False
-    if time_in_minutes < 0:
-        before = True
-        time_in_minutes = abs(time_in_minutes)
-    if time_in_minutes > time_units_to_minutes["year"]:
-        unit = "year"
-        value = time_in_minutes // time_units_to_minutes["year"]
-    elif time_in_minutes > time_units_to_minutes["month"]:
-        unit = "month"
-        value = time_in_minutes // time_units_to_minutes["month"]
-    elif time_in_minutes > time_units_to_minutes["day"]:
-        unit = "day"
-        value = time_in_minutes // time_units_to_minutes["day"]
-    elif time_in_minutes > time_units_to_minutes["hour"]:
-        unit = "hour"
-        value = time_in_minutes // time_units_to_minutes["hour"]
+def log_text(line, log_file="llm_finetuning.log"):
+    with open(log_file, "a") as log:
+        log.write(line)
+        log.write("\n")
+
+def formatting_prompts_func(examples):
+    instructions = examples["instruction"]
+    inputs = examples["input"]
+    outputs = examples["output"]
+    texts = []
+    for instruction, input, output in zip(instructions, inputs, outputs):
+        # Must add EOS_TOKEN, otherwise your generation will go on forever!
+        text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
+        texts.append(text)
+    return {"text": texts, }
+
+def prepare_model(model_name, max_seq_length):
+    global EOS_TOKEN
+    dtype = None  # None for auto detection. Float16 for Tesla T4, V100, Bfloat16 for Ampere+
+    load_in_4bit = True  # Use 4bit quantization to reduce memory usage. Can be False.
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=model_name,
+        max_seq_length=max_seq_length,
+        dtype=dtype,
+        load_in_4bit=load_in_4bit,
+        # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+    )
+
+    if "gemma" in model_name:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            finetune_vision_layers=False,  # Turn off for just text!
+            finetune_language_layers=True,  # Should leave on!
+            finetune_attention_modules=True,  # Attention good for GRPO
+            finetune_mlp_modules=True,  # Should leave on always!
+
+            r=8,  # Larger = higher accuracy, but might overfit
+            lora_alpha=8,  # Recommended alpha == r at least
+            lora_dropout=0,
+            bias="none",
+            random_state=3407,
+        )
+        tokenizer = get_chat_template(
+            tokenizer,
+            chat_template="gemma-3",
+        )
     else:
-        unit = "minute"
-        value = time_in_minutes
-    return f"{value} {unit}{'s' if value > 1 else ''} {'before' if before else 'after'}"
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj", ],
+            lora_alpha=16,
+            lora_dropout=0,  # Supports any, but = 0 is optimized
+            bias="none",  # Supports any, but = "none" is optimized
+            # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
+            use_gradient_checkpointing="unsloth",  # True or "unsloth" for very long context
+            random_state=3407,
+            use_rslora=False,  # We support rank stabilized LoRA
+            loftq_config=None,  # And LoftQ
+        )
+    EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
 
-# --- Convert each row to a QA pair ---
-def create_conversation(row):
-    summary = row["text"]
-    summary_with_event = summary[:row["start_char"]] + "<event>" + summary[row["start_char"]:row["end_char"]] + "</event>" + summary[row["end_char"]:]
-    prompt = (
-        "Below is a patient discharge summary. Guess how long before or after the admission date "
-        "did the event marked with <event> tag start and end. Provide your guess as a number of months, days, hours, or minutes.\n\n"
-        f"Text: {summary_with_event}"
-    )
-    answer = (
-        f"Start time: {convert_time_in_minutes_to_description(row['start_time_minutes'] - row['admission_date_minutes'])}\n"
-        f"End time: {convert_time_in_minutes_to_description(row['end_time_minutes'] - row['admission_date_minutes'])}"
-    )
-    return pd.Series({"prompt": prompt, "answer": answer})
+    return model, tokenizer
 
-OUTPUT_DIR = "./finetuned_llama"
-def finetune_on_i2b2():
-    i2b2_dataset = load_i2b2_absolute_data(test_split=False)
+def prepare_data(model_name, tokenizer):
+    df = load_i2b2_absolute_data(test_split=False)
+    datasetPT = TimelineDataset(df, use_qa_format=True)
 
-    dataset = i2b2_dataset.apply(create_conversation, axis=1)
-    formatted_data = [{"conversations": [{"from": "user", "value": item["prompt"]}, {"from": "gpt", "value": item["answer"]}]} for item in dataset.iloc]
-    formatted_dataset = Dataset.from_list(formatted_data)
+    def dataset_generator(ptDataset):
+        for i in range(len(ptDataset)):
+            yield ptDataset[i]
+    dataset = Dataset.from_generator(lambda: dataset_generator(datasetPT))
 
-    # --- Tokenizer & Model ---
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, token=os.environ["HF_TOKEN"])
-    tokenizer.pad_token = tokenizer.eos_token
+    if "gemma" in model_name:
+        def convert_to_conversation(sample):
+            return {
+                "conversations": [
+                    {"content": sample["instruction"] + "\n\n\nInput:\n" + sample["input"], "role": "user"},
+                    {"content": sample["output"], "role": "assistant"},
+                ]
+            }
 
-    # Configure 4-bit quantization
-    compute_dtype = torch.bfloat16
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",        # Use normalized float 4 for better accuracy
-        bnb_4bit_compute_dtype=compute_dtype,
-        bnb_4bit_use_double_quant=True,   # Apply second quantization for more memory savings
-    )
+        dataset = dataset.map(convert_to_conversation)
+        def apply_chat_template(examples):
+            texts = tokenizer.apply_chat_template(examples["conversations"])
+            return {"text": texts}
 
-    # Optional: LoRA for parameter-efficient fine-tuning
-    peft_config = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    )
+        dataset = dataset.map(apply_chat_template, batched=True)
+    else:
+        dataset = dataset.map(formatting_prompts_func, batched=True, )
+    return dataset
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="auto",
-        quantization_config=bnb_config,   # Use the 4-bit quantization config
-        torch_dtype=compute_dtype,
-        trust_remote_code=True,
-        token=os.environ["HF_TOKEN"]
-    )
-
-    # --- Training Arguments ---
+def train_the_model(model, dataset, tokenizer, max_seq_length):
+    wandb.init(project="fine-grained-finetuning")
     training_args = TrainingArguments(
-        output_dir="./llama3-i2b2-checkpoints",
-        per_device_train_batch_size=2,    # Reduced batch size to help with memory
-        gradient_accumulation_steps=4,    # Increased gradient accumulation to compensate
-        logging_steps=10,
-        save_strategy="epoch",
-        num_train_epochs=3,
-        learning_rate=2e-5,
-        bf16=True,                        # Use bfloat16 for training
-        logging_dir="./logs",
-        optim="paged_adamw_32bit",        # Use 32-bit Adam optimizer
-        report_to="none",
-        save_total_limit=2,
-        gradient_checkpointing=True,      # Enable gradient checkpointing to save memory
-    )
-
-    # --- Trainer ---
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=4,
+            warmup_steps=5,
+            num_train_epochs=5,  # Set this for 1 full training run.
+            # max_steps = 60,
+            learning_rate=2e-4,
+            fp16=not is_bfloat16_supported(),
+            bf16=is_bfloat16_supported(),
+            logging_steps=1,
+            optim="adamw_8bit",
+            weight_decay=0.01,
+            lr_scheduler_type="linear",
+            seed=3407,
+            output_dir="outputs",
+            report_to="wandb",  # Use this for WandB etc
+        )
+    if "gemma" in model_id:
+        training_args = SFTConfig(
+            dataset_text_field = "text",
+            per_device_train_batch_size = 2,
+            gradient_accumulation_steps = 4, # Use GA to mimic batch size!
+            warmup_steps = 5,
+            num_train_epochs = 5, # Set this for 1 full training run.
+            # max_steps = 3,
+            learning_rate = 2e-4, # Reduce to 2e-5 for long training runs
+            logging_steps = 1,
+            optim = "adamw_8bit",
+            weight_decay = 0.01,
+            lr_scheduler_type = "linear",
+            seed = 3407,
+            report_to = "none", # Use this for WandB etc
+        )
     trainer = SFTTrainer(
         model=model,
-        train_dataset=formatted_dataset,
-        formatting_func=lambda example: [
-            {"role": turn["from"], "content": turn["value"]} for turn in example["conversations"]
-        ],
-        peft_config=peft_config,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        max_seq_length=max_seq_length,
+        dataset_num_proc=2,
+        packing=False,  # Can make training 5x faster for short sequences.
         args=training_args,
     )
-
-    # --- Train! ---
-    trainer.train()
-
-
-    # Save the final model
-    model.save_pretrained(os.path.join(OUTPUT_DIR, "final_model"))
-    tokenizer.save_pretrained(os.path.join(OUTPUT_DIR, "final_model"))
-
-    print(f"Model successfully saved to {os.path.join(OUTPUT_DIR, 'final_model')}")
-
-# Example function to demonstrate how to load and use the saved model
-def load_and_use_model():
-    saved_model_path = os.path.join(OUTPUT_DIR, "final_model")
-    loaded_model = LlamaForCausalLM.from_pretrained(saved_model_path)
-    loaded_tokenizer = LlamaTokenizer.from_pretrained(saved_model_path)
-
-    # Example usage
-    input_text = "Once upon a time"
-    inputs = loaded_tokenizer(input_text, return_tensors="pt")
-
-    with torch.no_grad():
-        outputs = loaded_model.generate(
-            inputs["input_ids"],
-            max_length=50,
-            num_return_sequences=1,
-            temperature=0.7,
+    if "gemma" in model_id:
+        trainer = train_on_responses_only(
+            trainer,
+            instruction_part="<start_of_turn>user\n",
+            response_part="<start_of_turn>model\n",
         )
+    trainer_stats = trainer.train()
 
-    generated_text = loaded_tokenizer.decode(outputs[0], skip_special_tokens=True)
-    print(f"Generated text: {generated_text}")
 
-# Uncomment to demonstrate loading and using the model
-# load_and_use_model()
+
+def parse_answer(answer):
+    # Regex to extract 'START: ...' and 'END: ...'
+    start_match = re.search(r"START:\s*([^\.,\n]+)", answer, re.IGNORECASE)
+    end_match = re.search(r"END:\s*([^\.,\n]+)", answer, re.IGNORECASE)
+    def to_minutes(text):
+        time_units_to_minutes = {
+            "minute": 1,
+            "hour": 60,
+            "day": 1440,
+            "month": 43200,
+            "year": 1440 * 365
+        }
+        m = re.match(r"(\d+)\s+(\w+)[s]?\s+(before|after)", text.strip())
+        if not m:
+            return None
+        value, unit, direction = m.groups()
+        value = int(value)
+        unit = unit.lower()
+        minutes = value * time_units_to_minutes.get(unit, 1)
+        if direction == "before":
+            minutes = -minutes
+        return minutes
+    start = to_minutes(start_match.group(1)) if start_match else 0
+    end = to_minutes(end_match.group(1)) if end_match else 0
+    return {"start": start, "end": end}
+
+def test_the_model(model, df, tokenizer):
+    datasetPT = TimelineDataset(df, use_qa_format=True)
+
+    def dataset_generator(ptDataset):
+        for i in range(len(ptDataset)):
+            yield ptDataset[i]
+
+    dataset = Dataset.from_generator(lambda: dataset_generator(datasetPT))
+    dataset = dataset.map(formatting_prompts_func, batched=True, )
+
+    FastLanguageModel.for_inference(model)
+    gold = []
+    predicted = []
+
+    predictions_starts = []
+    predictions_ends = []
+    predictions_durations = []
+    gold_starts = []
+    gold_ends = []
+    gold_durations = []
+
+    for example in dataset:
+        inputs = tokenizer(
+            [
+                alpaca_prompt.format(
+                    example["instruction"],  # instruction
+                    example["input"],  # input
+                    "",  # output - leave this blank for generation!
+                )
+            ], return_tensors="pt").to("cuda")
+
+        outputs = model.generate(**inputs, max_new_tokens=64, use_cache=True)
+        answer = tokenizer.batch_decode(outputs)[0]
+        parsed = parse_answer(answer)
+        s = parsed["start"] + example["row"]["admission_date_minutes"]
+        predictions_starts.append(s)
+        e = parsed["end"] + example["row"]["admission_date_minutes"]
+        predictions_ends.append(e)
+        d = parsed["end"] - parsed["start"]
+        predictions_durations.append(d)
+        gs = (example["row"]["start_time_minutes"], example["row"]["start_lower_minutes"], example["row"]["start_upper_minutes"])
+        gold_starts.append(gs)
+        ge = (example["row"]["end_time_minutes"], example["row"]["end_lower_minutes"], example["row"]["end_upper_minutes"])
+        gold_ends.append(ge)
+        gd = (example["row"]["duration_minutes"], example["row"]["duration_lower_minutes"], example["row"]["duration_upper_minutes"])
+        gold_durations.append(gd)
+
+        store_prediction_for_error_analysis(model_id, example["row"]["document_id"], example["row"]["text"],
+                                            example["row"]["event_id"], example["row"]["start_char"],
+                                            example["row"]["end_char"], s, e, d, gs, ge, gd)
+
+
+        eval_metrics_partial = compute_metrics(predictions_starts, predictions_ends, predictions_durations, gold_starts,
+                                               gold_ends,
+                                               gold_durations)
+        print(f"{model_id} --- Partial metrics: {eval_metrics_partial}")
+        log_text(f"{model_id} --- Partial metrics: {eval_metrics_partial}", log_file=f"{model_id}_evaluation.log")
+
+        gold.append(example["text"])
+        predicted.append(answer)
+
+    eval_metrics = compute_metrics(predictions_starts, predictions_ends, predictions_durations, gold_starts, gold_ends,
+                                   gold_durations)
+    print(f"{model_id} --- Evaluation metrics: {eval_metrics}")
+    log_text(f"{model_id} --- Evaluation metrics: {eval_metrics}", log_file=f"{model_id}_evaluation.log")
+
+    torch.save({"gold": gold, "predicted": predicted}, folder + "finetuned-results-alpaca.pt")
+
+def save_model(model, tokenizer):
+    model.save_pretrained(model_id + "-lora_model")  # Local saving
+    tokenizer.save_pretrained(model_id + "-lora_model")
+
+def finetune_on_i2b2(model_name):
+    global model_card, model_id
+    # model_card = "unsloth/Meta-Llama-3.1-8B"
+    # model_card = "unsloth/gemma-3-12b-it-unsloth-bnb-4bit"
+    max_seq_length = 4096
+    model_card = model_name
+    model_id = model_name.split("/")[-1] + "-finetuned"
+    model, tokenizer = prepare_model(model_card, max_seq_length)
+    dataset = prepare_data(model_card, tokenizer)
+    train_the_model(model, dataset, tokenizer, max_seq_length)
+    save_model(model, tokenizer)
+    df_test = load_i2b2_absolute_data(test_split=True)
+    test_the_model(model, df_test, tokenizer)
+    pass
+
 if __name__ == '__main__':
-    finetune_on_i2b2()
+    finetune_on_i2b2("unsloth/gemma-3-12b-it-unsloth-bnb-4bit")
