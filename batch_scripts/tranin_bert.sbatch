@@ -16,4 +16,4 @@ srun \
   -A lpt -p frida \
   --container-image /shared/home/timotej.knez/containers/modern_bert.sqfs \
   --container-mounts "$PWD":/workspace \
-  bash -c "cd /workspace; pip install dspy trl; python3 main.py --script train_bert_model"
+  bash -c "cd /workspace; pip install dspy trl google-genai ollama; python3 main.py --script train_bert_model"

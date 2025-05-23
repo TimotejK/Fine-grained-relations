@@ -163,6 +163,7 @@ def train(model, dataset, dataset_test, config, project_name="timeline_training"
 
     # Save final model
     save_model(model, model.tokenizer, f"results/{run_name}_final")
+    evaluate(model, dataloader_test, simplified_model=simplified_model, save_error_analysis=True, model_id=run_name)
     wandb.finish()
     return eval_metrics
 
@@ -218,13 +219,15 @@ def train_and_evaluate_model_with_parameters(config):
     return final_results
 
 if __name__ == '__main__':
-    # emilyalsentzer/Bio_ClinicalBERT
     config = ModelConfig()
 
     # Adjust hyperparameters for more stable training
+    config.simplified_transformer_config["individually_train_regressor_number"] = -1  # Train all regressors
+    config.simplified_transformer_config["predicted_minutes_scaling_factor"] = 10000  # should improve stability
+    config.training_hyperparameters["seed"] = 42  # Set a fixed seed for reproducibility
     config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
     config.training_hyperparameters["weight_decay"] = 0.01   # Stronger regularization
-    config.training_hyperparameters["batch_size"] = 16       # Adjust batch size as needed
+    config.training_hyperparameters["batch_size"] = 2       # Adjust batch size as needed
     config.training_hyperparameters["epochs"] = 20           # More epochs with early stopping
 
     # Train with the improved configuration

@@ -10,7 +10,6 @@ from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
 from data_loaders.preprocessing import preprocess
 from evaluation.evaluate_llm_prompting import evaluate_all_llms
-from llm_finetuning.finetuning import finetune_on_i2b2
 from models import BertBasedModel
 from models.model_config import ModelConfig
 from train import train_bert_model
@@ -64,19 +63,33 @@ def main():
     if args.script == "train_bert_model":
         print("Running train_bert_model...")
         config = ModelConfig()
-        config.training_hyperparameters['batch_size'] = 16
-        config.simplified_transformer_config['individually_train_regressor_number'] = 0 # train only the start time value and ignore the rest
+        # Adjust hyperparameters for more stable training
+        config.simplified_transformer_config["individually_train_regressor_number"] = -1  # Train all regressors
+        config.simplified_transformer_config["predicted_minutes_scaling_factor"] = 10000  # should improve stability
+        config.training_hyperparameters["seed"] = 42  # Set a fixed seed for reproducibility
+        config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
+        config.training_hyperparameters["weight_decay"] = 0.01  # Stronger regularization
+        config.training_hyperparameters["batch_size"] = 16  # Adjust batch size as needed
+        config.training_hyperparameters["epochs"] = 20  # More epochs with early stopping
+
+        train_and_evaluate_model_with_parameters(config)
+        config.training_hyperparameters["learning_rate"] = 2e-3  # Higher learning rate
+        train_and_evaluate_model_with_parameters(config)
+        config.training_hyperparameters["learning_rate"] = 2e-1  # Very high learning rate
         train_and_evaluate_model_with_parameters(config)
 
         config.simplified_transformer_config["pooling_strategy"] = "mean"
         config.simplified_transformer_config["model_name"] = "Simonlee711/Clinical_ModernBERT"
+        config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
         train_and_evaluate_model_with_parameters(config)
 
         config.simplified_transformer_config["pooling_strategy"] = "max"
         config.simplified_transformer_config["model_name"] = "Simonlee711/Clinical_ModernBERT"
+        config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
         train_and_evaluate_model_with_parameters(config)
 
     if args.script == "finetune_llm":
+        from llm_finetuning.finetuning import finetune_on_i2b2
         finetune_on_i2b2(args.model)
 
     if args.script == "prompting_llm":

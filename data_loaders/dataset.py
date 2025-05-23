@@ -90,6 +90,8 @@ class TimelineDataset(Dataset):
             # 'input_ids': inputs['input_ids'].squeeze(0),
             # 'attention_mask': inputs['attention_mask'].squeeze(0),
             "text": text,
+            "document_id": row['document_id'],
+            "event_id": row['event_id'],
             "start_unit": start_unit,
             "start_value": start_value,
             "end_unit": end_unit,

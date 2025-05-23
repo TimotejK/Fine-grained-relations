@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 
 from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
-from evaluation.metrics import evaluate_temporal_predictions, compute_metrics
+from evaluation.metrics import evaluate_temporal_predictions, compute_metrics, store_prediction_for_error_analysis
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 device = torch.device("mps") if torch.backends.mps.is_available() else device
@@ -184,7 +184,7 @@ def show_predictions(predicted_starts, predicted_ends, predicted_durations, gold
               "(" + str(convert_minutes_to_datetime(gold_d_lower, duration=True)) + " - " + str(convert_minutes_to_datetime(gold_d_upper, duration=True)) + ")")
     pass
 
-def evaluate(model, dataloader, simplified_model) -> (float, dict):
+def evaluate(model, dataloader, simplified_model, save_error_analysis=False, model_id="") -> (float, dict):
     model.eval()
     total_eval_loss = 0
     predicted_starts = []
@@ -240,11 +240,20 @@ def evaluate(model, dataloader, simplified_model) -> (float, dict):
             predicted_starts += start_minutes
             predicted_ends += end_minutes
             predicted_durations += duration_minutes
-            gold_starts += [(float(t),float(l),float(u)) for t,l,u in zip(batch["start_time_minutes"], batch["start_lower_minutes"], batch["start_upper_minutes"])]
-            gold_ends += [(float(t),float(l),float(u)) for t,l,u in zip(batch["end_time_minutes"], batch["end_lower_minutes"], batch["end_upper_minutes"])]
-            gold_durations += [(float(t),float(l),float(u)) for t,l,u in zip(batch["duration_minutes"], batch["duration_lower_minutes"], batch["duration_upper_minutes"])]
+            gs = [(float(t),float(l),float(u)) for t,l,u in zip(batch["start_time_minutes"], batch["start_lower_minutes"], batch["start_upper_minutes"])]
+            gold_starts += gs
+            ge = [(float(t),float(l),float(u)) for t,l,u in zip(batch["end_time_minutes"], batch["end_lower_minutes"], batch["end_upper_minutes"])]
+            gold_ends += ge
+            gd = [(float(t),float(l),float(u)) for t,l,u in zip(batch["duration_minutes"], batch["duration_lower_minutes"], batch["duration_upper_minutes"])]
+            gold_durations += gd
             eval_metrics = compute_metrics(predicted_starts, predicted_ends, predicted_durations, gold_starts, gold_ends, gold_durations)
-            show_predictions(predicted_starts, predicted_ends, predicted_durations, gold_starts, gold_ends, gold_durations, batch)
+            if save_error_analysis:
+                for i in range(len(eval_metrics)):
+                    store_prediction_for_error_analysis(model_id, batch["document_id"][i], batch["text"][i],
+                                                        batch["event_id"][i], batch["start_char"][i],
+                                                        batch["end_char"][i], start_minutes[i], end_minutes[i], duration_minutes[i], gs[i], ge[i], gd[i])
+                    pass
+            # show_predictions(predicted_starts, predicted_ends, predicted_durations, gold_starts, gold_ends, gold_durations, batch)
     print("End of epoch results on eval:")
 
     print(eval_metrics)
