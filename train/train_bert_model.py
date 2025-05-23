@@ -52,7 +52,7 @@ def train(model, dataset, dataset_test, config, project_name="timeline_training"
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     dataloader_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, eps=1e-8)
-    total_steps = len(dataloader) * epochs
+    total_steps = len(dataloader) * epochs // batch_size
     warmup_steps = int(0.1 * total_steps)  # 10% of total steps for warmup
 
     scheduler = get_linear_schedule_with_warmup(

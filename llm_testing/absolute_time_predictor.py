@@ -38,7 +38,8 @@ class ZeroShotPromptingModel(AbsoluteTimePredictor):
         if self.use_structured_response:
             prompt = (
                 "Below is a patient discharge summary. Guess how long before or after the admission date did the event "
-                "marked with <event> <point>. Provide your guess as a number of months, days, hours, or minutes. Answer in json where numbers are negative if event occurred before admission time format with example: {{\"months\": 0, \"days\": -3, \"hours\": 0, \"minutes\": 0}}\n\n"
+                "marked with <event> {point}. Provide your guess as a number of months, days, hours, or minutes. Answer in a JSON format where numbers are negative if event occurred before admission time.\n"
+                "Example: {{\"months\": 0, \"days\": -3, \"hours\": 0, \"minutes\": 0}}\n\n"
                 "{summary}\n")
             response: TimeInterval = self.llm.predict_schema(prompt=prompt.format(summary=summary_with_event, point=prediction_point),
                                                              schema=TimeInterval)
@@ -58,15 +59,22 @@ class ZeroShotPromptingModel(AbsoluteTimePredictor):
             response = self.llm.predict(prompt.format(summary=summary_with_event, point=prediction_point))
 
             print(response)
-            patterns = [r"(\d+) (months?|days?|hours?|minutes?) (before|after)",
+            patterns = [r"PREDICTION: (\d+) (months?|days?|hours?|minutes?) (before|after)",
+                        r"PREDICTION: (several) (months?|days?|hours?|minutes?) (before|after)",
+                        r"(\d+) (months?|days?|hours?|minutes?) (before|after)",
                         r"(\d+) (months?|days?|hours?|minutes?)"]
             for search_pattern in patterns:
                 # print(re.search(search_pattern, response).group())
                 match = re.search(search_pattern, response)
                 if match:
-                    value = int(match.group(1))
+                    if match.group(1) == "several":
+                        value = 3
+                    else:
+                        value = int(match.group(1))
                     unit = match.group(2).rstrip('s')  # Remove plural 's'
-                    direction = match.group(3)
+                    direction = "before"
+                    if len(match.groups()) > 2:
+                        direction = match.group(3)
 
                     # Convert to minutes
                     minutes = value * self.time_units_to_minutes[unit]
@@ -81,15 +89,3 @@ class ZeroShotPromptingModel(AbsoluteTimePredictor):
         start = self.predict_part(row, prediction_point="start")
         end = self.predict_part(row, prediction_point="end")
         return {"start_minutes": start, "end_minutes": end}
-
-
-if __name__ == '__main__':
-    text = "\\nADMISSION DATE :\\n10/17/95\\nDISCHARGE DATE :\\n10/20/95\\nHISTORY OF PRESENT ILLNESS :\\nThis is a 73-year-old man with squamous cell carcinoma of the lung , status post lobectomy and resection of left cervical recurrence , admitted here with fever and neutropenia .\\nRecently he had been receiving a combination of outpatient chemotherapy with the CAMP Program .\\nOther medical problems include hypothyroidism , hypercholesterolemia , hypertension and neuropathy from Taxol .\\nHOSPITAL COURSE :\\nHe was started on Neupogen , 400 mcg. subq. q.d.\\nHe was initially treated with antibiotic therapy .\\nChest x-ray showed questionable nodule in the right lower lobe , reasonably stable .\\nCalcium 8.7 , bilirubin 0.3/1.3 , creatinine 1.1 , glucose 128 .\\nHematocrit 24.6 .\\nWBC rose to 1.7 on 10/19 .\\nThe patient had some diarrhea .\\nThere was no diarrhea on 10/20 .\\nHe was feeling well and afebrile .\\nThe neutropenia resolved and he was felt to be in satisfactory condition on discharge on 10/20/95 .\\nHe was discharged home on Neupogen .\\n"
-    start = 356
-    end = 378
-    start, end = 236,241
-
-
-    model = GeminiModel("")
-    predictor = ZeroShotPromptingModel(model)
-    predictor.predict(summary=text, event_start=start, event_end=end, admission_time="", discharge_time="")

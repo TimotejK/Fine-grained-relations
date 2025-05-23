@@ -159,3 +159,5 @@ def load_and_use_model():
 
 # Uncomment to demonstrate loading and using the model
 # load_and_use_model()
+if __name__ == '__main__':
+    finetune_on_i2b2()

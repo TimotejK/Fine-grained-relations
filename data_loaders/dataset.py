@@ -4,8 +4,9 @@ from torch.utils.data import Dataset
 import torch
 
 class TimelineDataset(Dataset):
-    def __init__(self, dataframe):
+    def __init__(self, dataframe, use_qa_format=False):
         self.df = dataframe
+        self.use_qa_format = use_qa_format
 
     def __len__(self):
         return len(self.df)
@@ -29,7 +30,54 @@ class TimelineDataset(Dataset):
         end_minutes_upper = [minutes_in_unit[unit] * (value+1) for unit, value in zip(end_unit, prediction["end_value"].detach().cpu())]
         return (start_minutes, start_minutes_lower, start_minutes_upper), (end_minutes, end_minutes_lower, end_minutes_upper)
 
+    def convert_time_in_minutes_to_description(self, time_in_minutes):
+        time_units_to_minutes = {
+            "minute": 1,
+            "hour": 60,
+            "day": 1440,
+            "month": 43200,  # Approximating 1 month as 30 days
+            "year": 1440 * 365  # Approximating 1 year as 365 days
+        }
+        before = False
+        if time_in_minutes < 0:
+            before = True
+            time_in_minutes = abs(time_in_minutes)
+
+        if time_in_minutes > time_units_to_minutes["year"]:
+            unit = "year"
+            value = time_in_minutes // time_units_to_minutes['year']
+        elif time_in_minutes > time_units_to_minutes["month"]:
+            unit = "month"
+            value = time_in_minutes // time_units_to_minutes['month']
+        elif time_in_minutes > time_units_to_minutes["day"]:
+            unit = "day"
+            value = time_in_minutes // time_units_to_minutes['day']
+        elif time_in_minutes > time_units_to_minutes["hour"]:
+            unit = "hour"
+            value = time_in_minutes // time_units_to_minutes['hour']
+        else:
+            unit = "minute"
+            value = time_in_minutes
+        return f"{value} {unit}" + ("s" if value > 1 else "") + " " + ("before" if before else "after") + " admission"
+
+    def __getitem_qa_format(self, idx):
+        row = self.df.iloc[idx]
+        question = ("You are given a patient discharge summary. An event of interest is marked within `<event>` tags in the text. "
+                    "Your task is to estimate when this event started and ended relative to the patient's admission date.)\n"
+                    "Provide your estimates **as clearly formatted time intervals** (e.g., \"START: 2 days before admission\"," 
+                    "\"END: 3 hours after admission\"). If exact timing is unclear, provide your best guess based on the available information.\n")
+                    # "**Text:**\n"
+                    # f"{row['text']}\n")
+        answer = "START: " + self.convert_time_in_minutes_to_description(row["start_time_minutes"]) + ", END: " + self.convert_time_in_minutes_to_description(row["end_time_minutes"])
+        return {
+            "output": answer,
+            "input": row['text'],
+            "instruction": question
+        }
+
     def __getitem__(self, idx):
+        if self.use_qa_format:
+            return  self.__getitem_qa_format(idx)
         row = self.df.iloc[idx]
         text = row['text']  # assumes event context is in here
 

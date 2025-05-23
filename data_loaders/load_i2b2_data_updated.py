@@ -145,7 +145,8 @@ def compute_missing_values(df):
 
         # TODO you can experiment with different functions
         def combine_distance(a, b):
-            return max(a,b)
+            return a + b
+            # return max(a,b)
 
         # Compute missing value and corresponding bounds
         if start_time and end_time and not duration:
@@ -258,10 +259,11 @@ def extract_admission_discharge_dates(df):
                 df.at[i, 'discharge_date'] = time
 
                 # Convert the dates to minutes since BASE_DATETIME
+    # Assume that the asmission and discharge happened at noon
     df['admission_date_minutes'] = df['admission_date'].map(
-        lambda x: (x - BASE_DATETIME).total_seconds() // 60 if pd.notna(x) else None)
+        lambda x: (x - BASE_DATETIME).total_seconds() // 60 + (12*60) if pd.notna(x) else None)
     df['discharge_date_minutes'] = df['discharge_date'].map(
-        lambda x: (x - BASE_DATETIME).total_seconds() // 60 if pd.notna(x) else None)
+        lambda x: (x - BASE_DATETIME).total_seconds() // 60 + (12*60) if pd.notna(x) else None)
 
     return df
 

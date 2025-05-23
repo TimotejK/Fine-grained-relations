@@ -3,7 +3,7 @@ transformers>=4.39.0
 datasets>=2.18.0
 peft>=0.10.0
 accelerate>=0.27.2
-bitsandbytes
+bitsandbytes~=0.42.0
 
 # Tokenization & Data handling
 scikit-learn>=1.4.0
@@ -21,6 +21,12 @@ psutil>=5.9.0
 # Visualization / Testing (optional)
 matplotlib>=3.8.0
 
-wandb
+wandb~=0.19.10
 chardet
-trl
+trl~=0.17.0
+protobuf~=5.29.3
+openai~=1.75.0
+ollama~=0.4.8
+pydantic~=2.11.4
+dspy~=2.6.23
+python-dateutil~=2.9.0post0

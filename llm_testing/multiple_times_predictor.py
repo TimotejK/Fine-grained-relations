@@ -32,8 +32,12 @@ class EventTimePredictor:
         annotated_text = ""
         last_index = 0
         event_mapping = {}
+        ground_truth = {}
 
-        for i, (event_id, start, end) in enumerate(events):
+        for i, (event_id, start, end,
+                admission_date_minutes, discharge_date_minutes, start_time_minutes, start_lower_minutes,
+                start_upper_minutes, end_time_minutes, end_lower_minutes, end_upper_minutes,
+                duration_minutes, duration_lower_minutes, duration_upper_minutes) in enumerate(events):
             # Append text before this event
             annotated_text += document[last_index:start]
             # Annotate the text with the event
@@ -42,12 +46,21 @@ class EventTimePredictor:
             # Map the event tag to its event_id
             event_mapping[event_tag] = event_id
             event_mapping[f"event{i + 1}"] = event_id
+            event_mapping[document[start:end]] = event_id
+            ground_truth[event_id] = {
+                "admission_date_minutes": admission_date_minutes, "discharge_date_minutes": discharge_date_minutes,
+                "start_time_minutes": start_time_minutes, "start_lower_minutes": start_lower_minutes,
+                "start_upper_minutes": start_upper_minutes, "end_time_minutes": end_time_minutes,
+                "end_lower_minutes": end_lower_minutes, "end_upper_minutes": end_upper_minutes,
+                "duration_minutes": duration_minutes, "duration_lower_minutes": duration_lower_minutes,
+                "duration_upper_minutes": duration_upper_minutes
+            }
             last_index = end
 
         # Append the remaining text after the last event
         annotated_text += document[last_index:]
 
-        return annotated_text, event_mapping
+        return annotated_text, event_mapping, ground_truth
 
     def predict_event_times_for_a_document(self, document, events, admission_time):
         """
@@ -58,19 +71,47 @@ class EventTimePredictor:
         :param admission_time: Admission time in minutes to compute relative times.
         :return: List of predictions containing event_id, start_time_minutes, and end_time_minutes.
         """
-        annotated_text, event_mapping = self.prepare_prompt(document, events)
+        annotated_text, event_mapping, ground_truth = self.prepare_prompt(document, events)
 
         if self.use_structured_response:
             # Use structured response format
             prompt = (
-                "Below is a patient discharge summary with annotated events. "
-                "For each event marked as <event1>, <event2>, ..., predict how long "
-                "before or after the admission date each event STARTED and ENDED. "
-                "before or after the admission date each event occurred. Provide your answer "
-                "as a JSON list, where each value is an object "
-                "[{{\"event_tag\": \"<event1>\", \"start\": {{\"years\": 0, \"months\": 0, \"days\": 0, \"hours\": 0, \"minutes\": 0}}, "
-                "\"end\": {{\"years\": 0, \"months\": 0, \"days\": 0, \"hours\": 0, \"minutes\": 0}} }}].\n\n"
-                "Summary:\n{summary}\n"
+                """
+**You are given a patient discharge summary with annotated events.**
+Each event is marked with a tag such as `<event1>`, `<event2>`, and so on.
+
+**Task:** For each annotated event, predict when it **started** and **ended** relative to the **admission date**. Specify the time difference in years, months, days, hours, and minutes.
+
+**Output Format:** Return a JSON array where each item is an object with the following structure:
+
+```json
+"event_times": [
+  {{
+    "event_tag": "<event1>",
+    "start": {{ "years": 0, "months": 0, "days": -2, "hours": 0, "minutes": 0 }},
+    "end":   {{ "years": 0, "months": 0, "days": -1, "hours": 0, "minutes": 0 }}
+  }},
+  {{
+    "event_tag": "<event2>",
+    "start": {{ "years": 0, "months": 0, "days": 0, "hours": 3, "minutes": 0 }},
+    "end":   {{ "years": 0, "months": 0, "days": 0, "hours": 5, "minutes": 0 }}
+  }},
+  ...
+]
+```
+
+**Note:**
+
+* Use positive values if the event occurs *after* the admission date, and negative values if it occurs *before*.
+* Ensure each event in the summary is represented in the output.
+* As an event tag use literally <event1>, <event2>, and so on.
+
+**Summary:**
+
+```
+{summary}
+```
+                """
             )
 
             class TimePoint(BaseModel):
@@ -84,36 +125,42 @@ class EventTimePredictor:
                 start: TimePoint
                 end: TimePoint
 
+            class EventTimes(BaseModel):
+                event_times: list[EventTime]
+
             response = self.llm.predict_schema(
                 prompt=prompt.format(summary=annotated_text),
-                schema=list[EventTime]
+                schema=EventTimes
             )
 
             predictions = []
-            for event_tag, time_data in response.items():
+            for time in response.event_times:
+                event_tag = time.event_tag
+                start = time.start
+                end = time.end
                 start_minutes = (
-                        time_data["start"]["years"] * self.time_units_to_minutes["year"]
-                        + time_data["start"]["months"] * self.time_units_to_minutes["month"]
-                        + time_data["start"]["days"] * self.time_units_to_minutes["day"]
-                        + time_data["start"]["hours"] * self.time_units_to_minutes["hour"]
-                        + time_data["start"]["minutes"]
+                        start.years * self.time_units_to_minutes["year"]
+                        + start.months * self.time_units_to_minutes["month"]
+                        + start.days * self.time_units_to_minutes["day"]
+                        + start.hours * self.time_units_to_minutes["hour"]
+                        + start.minutes
                 )
                 end_minutes = (
-                        time_data["end"]["years"] * self.time_units_to_minutes["year"]
-                        + time_data["end"]["months"] * self.time_units_to_minutes["month"]
-                        + time_data["end"]["days"] * self.time_units_to_minutes["day"]
-                        + time_data["end"]["hours"] * self.time_units_to_minutes["hour"]
-                        + time_data["end"]["minutes"]
+                        end.years * self.time_units_to_minutes["year"]
+                        + end.months * self.time_units_to_minutes["month"]
+                        + end.days * self.time_units_to_minutes["day"]
+                        + end.hours * self.time_units_to_minutes["hour"]
+                        + end.minutes
                 )
                 # Map the event tag back to the event_id
                 event_id = event_mapping[event_tag]
                 predictions.append({
                     "event_id": event_id,
-                    "start_time_minutes": start_minutes + admission_time,
-                    "end_time_minutes": end_minutes + admission_time
+                    "predicted_start_time_minutes": start_minutes + admission_time,
+                    "predicted_end_time_minutes": end_minutes + admission_time
                 })
 
-            return predictions
+            return predictions, ground_truth
 
         else:
             # Use plain text response format
@@ -219,7 +266,7 @@ class EventTimePredictor:
                         }
                         predictions.append(prediction)
 
-            return predictions
+            return predictions, ground_truth
 
     def predict(self, dataframe):
         """
@@ -237,19 +284,21 @@ class EventTimePredictor:
             # Extract required fields
             document_text = group.iloc[0]["text"]
             admission_time = group.iloc[0]["admission_date_minutes"]
-            events = group[["event_id", "start_char", "end_char"]].values.tolist()
+            events = group[["event_id", "start_char", "end_char", "admission_date_minutes", "discharge_date_minutes", "start_time_minutes", "start_lower_minutes", "start_upper_minutes", "end_time_minutes", "end_lower_minutes", "end_upper_minutes", "duration_minutes", "duration_lower_minutes", "duration_upper_minutes"]].values.tolist()
 
             # Predict times for all events in this document
-            predictions = self.predict_event_times_for_a_document(document_text, events, admission_time)
+            predictions, ground_truth = self.predict_event_times_for_a_document(document_text, events, admission_time)
+
+            for i in range(len(predictions)):
+                predictions[i].update(ground_truth[predictions[i]["event_id"]])
+                pass
 
             yield document_id, predictions
             # Store predictions
             for prediction in predictions:
                 all_predictions.append({
                     "document_id": document_id,
-                    "event_id": prediction["event_id"],
-                    "start_time_minutes": prediction["start_time_minutes"],
-                    "end_time_minutes": prediction["end_time_minutes"]
+                    **prediction
                 })
 
         # Convert results to DataFrame

@@ -12,7 +12,7 @@ class ModelConfig:
         self.training_hyperparameters = {
             "learning_rate": 2e-5,
             "batch_size": 2,
-            "epochs": 30,
+            "epochs": 60,
             "seed": 42,
             "weight_decay": 0.01,
             "scheduler_config": {

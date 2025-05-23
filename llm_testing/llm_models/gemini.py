@@ -3,9 +3,8 @@ import hashlib
 import json
 from google import genai
 
-
 class GeminiModel:
-    def __init__(self, api_key, cache_dir="cache"):
+    def __init__(self, api_key, cache_dir="cache_gemini"):
         self.client = genai.Client(api_key=api_key)
         self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)  # Ensure the cache directory exists
@@ -17,15 +16,23 @@ class GeminiModel:
 
     def _load_from_cache(self, cache_path):
         # Load response from cache if it exists
+        from llm_testing.absolute_time_predictor import TimeInterval
+
         if os.path.exists(cache_path):
             with open(cache_path, "r") as f:
-                return json.load(f)
+                try:
+                    return TimeInterval.model_validate(json.load(f))
+                except ValueError:
+                    return f.read()
         return None
 
     def _save_to_cache(self, cache_path, response):
         # Save response to cache
         with open(cache_path, "w") as f:
-            json.dump(response, f)
+            if type(response) == str:
+                f.write(response)
+            else:
+                f.write(response.model_dump_json())
 
     def predict(self, prompt):
         # Get cache path for the given prompt
@@ -53,7 +60,7 @@ class GeminiModel:
 
     def predict_schema(self, prompt, schema):
         # Get cache path for the schema + prompt combination
-        cache_path = self._get_cache_file_path(prompt + json.dumps(schema))
+        cache_path = self._get_cache_file_path(prompt + schema.__name__)
 
         # Attempt to load from cache
         cached_response = self._load_from_cache(cache_path)
