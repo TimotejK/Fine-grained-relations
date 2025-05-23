@@ -1,6 +1,6 @@
 class ModelConfig:
     def __init__(self):
-        self.model_type = "simplified_transformer" # simplified_transformer, full_transformer
+        self.model_type = "simplified_transformer" # simplified_transformer, full_transformer, lstm
         self.simplified_transformer_config = {
             "model_name": "answerdotai/ModernBERT-base", # answerdotai/ModernBERT-base, emilyalsentzer/Bio_ClinicalBERT, Simonlee711/Clinical_ModernBERT
             "pooling_strategy": "mean", # mean, max, cls [use cls token instead of event embeddings]

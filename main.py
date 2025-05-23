@@ -88,11 +88,34 @@ def main():
         config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
         train_and_evaluate_model_with_parameters(config)
 
+    if args.script == "train_lstm_model":
+        print("Running train_bert_model...")
+        config = ModelConfig()
+        # Adjust hyperparameters for more stable training
+        config.model_type = "lstm"  # Train all regressors
+        config.simplified_transformer_config["individually_train_regressor_number"] = -1  # Train all regressors
+        config.simplified_transformer_config["predicted_minutes_scaling_factor"] = 10000  # should improve stability
+        config.training_hyperparameters["seed"] = 42  # Set a fixed seed for reproducibility
+        config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
+        config.training_hyperparameters["weight_decay"] = 0.01  # Stronger regularization
+        config.training_hyperparameters["batch_size"] = 16  # Adjust batch size as needed
+        config.training_hyperparameters["epochs"] = 20  # More epochs with early stopping
+
+        train_and_evaluate_model_with_parameters(config)
+        config.training_hyperparameters["learning_rate"] = 2e-3  # Higher learning rate
+        train_and_evaluate_model_with_parameters(config)
+        config.training_hyperparameters["learning_rate"] = 2e-1  # Very high learning rate
+        train_and_evaluate_model_with_parameters(config)
+
     if args.script == "finetune_llm":
         from llm_finetuning.finetuning import finetune_on_i2b2
         finetune_on_i2b2(args.model)
 
     if args.script == "prompting_llm":
+        # start ollama on hpc
+        import threading
+        import subprocess
+        import time
         def run_ollama_serve():
             subprocess.Popen(["ollama", "serve"])
 

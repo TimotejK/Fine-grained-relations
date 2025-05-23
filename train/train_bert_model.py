@@ -12,7 +12,7 @@ from tqdm import tqdm
 from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
 from evaluation.evaluate import evaluate
-from models import BertBasedModel, SimplifiedBertBasedModel
+from models import BertBasedModel, SimplifiedBertBasedModel, LSTMBasedModel
 from models.model_config import ModelConfig
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -24,7 +24,7 @@ def train(model, dataset, dataset_test, config, project_name="timeline_training"
 
     model.to(device)
 
-    simplified_model = config.model_type == "simplified_transformer"
+    simplified_model = config.model_type == "simplified_transformer" or config.model_type == "lstm"
     epochs = config.training_hyperparameters["epochs"]
     batch_size = config.training_hyperparameters["batch_size"]
     lr = config.training_hyperparameters["learning_rate"]
@@ -183,6 +183,8 @@ def load_model(directory, device=torch.device('cpu')):
         model_config = ModelConfig.from_dict(json.load(f))
     if model_config.model_type == "simplified_transformer":
         model = SimplifiedBertBasedModel.TimelineRegressor(model_config)
+    if model_config.model_type == "lstm":
+        model = LSTMBasedModel.BiLSTMRegressor(model_config)
     model.load_state_dict(torch.load(f"{directory}/model_state_dict.pth", map_location=device))
     tokenizer = AutoTokenizer.from_pretrained(directory + "/tokenizer")
     model.tokenizer = tokenizer
@@ -198,6 +200,8 @@ def train_and_evaluate_model_with_parameters(config):
         model = SimplifiedBertBasedModel.TimelineRegressor(config)
     elif config.model_type == "full_transformer":
         model = BertBasedModel.TimelineRegressor(config)
+    elif config.model_type == "lstm":
+        model = LSTMBasedModel.BiLSTMRegressor(config)
 
     # Load and preprocess data
     dataframe = load_i2b2_absolute_data()
