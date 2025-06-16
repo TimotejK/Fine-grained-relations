@@ -184,7 +184,7 @@ def show_predictions(predicted_starts, predicted_ends, predicted_durations, gold
               "(" + str(convert_minutes_to_datetime(gold_d_lower, duration=True)) + " - " + str(convert_minutes_to_datetime(gold_d_upper, duration=True)) + ")")
     pass
 
-def evaluate(model, dataloader, simplified_model, save_error_analysis=False, model_id="") -> (float, dict):
+def evaluate(model, dataloader, simplified_model, save_error_analysis=False, model_id="", config=None) -> (float, dict):
     model.eval()
     total_eval_loss = 0
     predicted_starts = []
@@ -214,12 +214,22 @@ def evaluate(model, dataloader, simplified_model, save_error_analysis=False, mod
 
             admission_times = batch['admission_date_minutes']
             if simplified_model:
-                outputs = model(
-                    text=batch['text'],
-                    labels=labels,
-                    start_char_index=batch['start_char'],
-                    end_char_index=batch['end_char']
-                )
+                if config.model_type == "closest_transformer":
+                    outputs = model(
+                        text=batch['text'],
+                        labels=labels,
+                        start_char_index=batch['start_char'],
+                        end_char_index=batch['end_char'],
+                        temporal_expressions = batch['temporal_expressions'],
+                        admission_date_minutes = batch['admission_date_minutes']
+                    )
+                else:
+                    outputs = model(
+                        text=batch['text'],
+                        labels=labels,
+                        start_char_index=batch['start_char'],
+                        end_char_index=batch['end_char']
+                    )
                 total_eval_loss += outputs['loss'].item()
                 start_minutes = (outputs['predictions'][:, 0].cpu() + admission_times).tolist()
                 end_minutes = (outputs['predictions'][:, 1].cpu() + admission_times).tolist()
@@ -248,7 +258,7 @@ def evaluate(model, dataloader, simplified_model, save_error_analysis=False, mod
             gold_durations += gd
             eval_metrics = compute_metrics(predicted_starts, predicted_ends, predicted_durations, gold_starts, gold_ends, gold_durations)
             if save_error_analysis:
-                for i in range(len(eval_metrics)):
+                for i in range(len(batch["document_id"])):
                     store_prediction_for_error_analysis(model_id, batch["document_id"][i], batch["text"][i],
                                                         batch["event_id"][i], batch["start_char"][i],
                                                         batch["end_char"][i], start_minutes[i], end_minutes[i], duration_minutes[i], gs[i], ge[i], gd[i])

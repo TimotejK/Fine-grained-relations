@@ -1,3 +1,4 @@
+import difflib
 import re
 from pydantic import BaseModel
 import pandas as pd
@@ -153,12 +154,19 @@ Each event is marked with a tag such as `<event1>`, `<event2>`, and so on.
                         + end.minutes
                 )
                 # Map the event tag back to the event_id
-                event_id = event_mapping[event_tag]
-                predictions.append({
-                    "event_id": event_id,
-                    "predicted_start_time_minutes": start_minutes + admission_time,
-                    "predicted_end_time_minutes": end_minutes + admission_time
-                })
+                event_id = event_mapping.get(event_tag)
+                if event_id is None:
+                    closest_key = difflib.get_close_matches(event_tag, event_mapping.keys(), n=1)
+                    if closest_key:
+                        event_id = event_mapping[closest_key[0]]
+                    else:
+                        event_id = None
+                if event_id is not None:
+                    predictions.append({
+                        "event_id": event_id,
+                        "predicted_start_time_minutes": start_minutes + admission_time,
+                        "predicted_end_time_minutes": end_minutes + admission_time
+                    })
 
             return predictions, ground_truth
 

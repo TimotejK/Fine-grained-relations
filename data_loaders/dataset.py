@@ -1,7 +1,101 @@
+import json
+
 import numpy as np
+import pandas as pd
 from numpy.ma.core import argmax
 from torch.utils.data import Dataset
 import torch
+from datetime import datetime, timedelta
+
+
+class SelectingTimeExressionsDataset(Dataset):
+    def __init__(self, dataframe):
+        self.df = self.construct_expanded_df(dataframe)
+
+    def construct_expanded_df(self, df):
+        expanded_rows = []
+        for _, row in df.iterrows():
+            text = row['text']
+            start_char = row['start_char']
+            end_char = row['end_char']
+            temporal_expressions = row['temporal_expressions']
+            # find the closest expression to the mean of row['start_time_minutes'] and row['end_time_minutes'] with regards to expression["value_minutes"]
+            mean_time = (row['start_time_minutes'] + row['end_time_minutes']) / 2
+
+            # add time in monutes
+            for expression in temporal_expressions:
+                time_value = expression["value"]
+                if 'T' in time_value or 't' in time_value:
+                    dt = datetime.strptime(time_value.replace('T', ' ').replace('t', ' ').replace('- ', ' '), '%Y-%m-%d %H:%M')
+                else:
+                    dt = (
+                        datetime.strptime(time_value, '%Y-%m-%d') if len(time_value) == 10
+                        else datetime.strptime(time_value, '%Y-%m') if len(time_value) == 7
+                        else datetime.strptime(time_value, '%Y')
+                    )
+                reference_date = datetime(1900, 1, 1)
+                delta = dt - reference_date
+                minutes_since_reference = delta.total_seconds() // 60
+                expression['value_minutes'] = minutes_since_reference
+
+            # Find the closest expression to the mean time
+            closest_expression = None
+            closest_diff = float('inf')
+            for expression in temporal_expressions:
+                if 'value_minutes' in expression:
+                    diff = abs(expression['value_minutes'] - mean_time)
+                    if diff < closest_diff:
+                        closest_diff = diff
+                        closest_expression = expression
+
+            if not closest_expression:
+                continue
+
+            for expression in temporal_expressions:
+                if closest_expression["time_id"] == expression["time_id"]:
+                    closest = 1
+                else:
+                    closest = 0
+
+                new_row = {
+                    'text': text,
+                    'document_id': row['document_id'],
+                    'event_id': row['event_id'],
+                    "start_time_minutes": row['start_time_minutes'],
+                    "end_time_minutes": row['end_time_minutes'],
+                    'start_char': start_char,
+                    'end_char': end_char,
+                    'expression_char_start': expression["start"],
+                    'expression_char_end': expression["end"],
+                    'value': expression["value"],
+                    'value_minutes': expression["value_minutes"],
+                    "admission_date_minutes": row['admission_date_minutes'],
+                    "closest": closest,
+                }
+                expanded_rows.append(new_row)
+        return pd.DataFrame(expanded_rows)
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+
+        return {"row": {
+            'text': row["text"],
+            'document_id': row["document_id"],
+            'event_id': row["event_id"],
+            "start_time_minutes": row["start_time_minutes"],
+            "end_time_minutes": row["end_time_minutes"],
+            'start_char': row["start_char"],
+            'end_char': row["end_char"],
+            'expression_char_start': row["expression_char_start"],
+            'expression_char_end': row["expression_char_end"],
+            'value': row["value"],
+            'value_minutes': row["value_minutes"],
+            "admission_date_minutes": row["admission_date_minutes"],
+            "closest": row["closest"]
+        }}
 
 class TimelineDataset(Dataset):
     def __init__(self, dataframe, use_qa_format=False):
@@ -76,6 +170,26 @@ class TimelineDataset(Dataset):
             "row": row.to_dict()
         }
 
+    def update_time_expressions(self, temporal_expressions):
+        for i, expression in enumerate(temporal_expressions):
+            time_value = expression["value"]
+            if 'T' in time_value or 't' in time_value:
+                dt = datetime.strptime(time_value.replace('T', ' ').replace('t', ' ').replace('- ', ' '),
+                                       '%Y-%m-%d %H:%M')
+            else:
+                dt = (
+                    datetime.strptime(time_value, '%Y-%m-%d') if len(time_value) == 10
+                    else datetime.strptime(time_value, '%Y-%m') if len(time_value) == 7
+                    else datetime.strptime(time_value, '%Y')
+                )
+            reference_date = datetime(1900, 1, 1)
+            delta = dt - reference_date
+            minutes_since_reference = delta.total_seconds() // 60
+
+            expression['value_minutes'] = minutes_since_reference
+            temporal_expressions[i] = expression
+        return temporal_expressions
+
     def __getitem__(self, idx):
         if self.use_qa_format:
             return  self.__getitem_qa_format(idx)
@@ -110,6 +224,7 @@ class TimelineDataset(Dataset):
             "admission_date_minutes": row['admission_date_minutes'],
             "start_char": row['start_char'],
             "end_char": row['end_char'],
+            "temporal_expressions": json.dumps(self.update_time_expressions(row['temporal_expressions'])),
             # "start_token": start_token,
             # "end_token": end_token,
         }

@@ -1,3 +1,5 @@
+import json
+
 import torch
 from transformers import AutoModel, AutoConfig, AutoTokenizer
 import torch.nn as nn
@@ -12,6 +14,8 @@ class TimelineRegressor(nn.Module):
         self.config = AutoConfig.from_pretrained(model_config.simplified_transformer_config["model_name"])
         self.encoder = AutoModel.from_pretrained(model_config.simplified_transformer_config["model_name"])
         self.tokenizer = AutoTokenizer.from_pretrained(model_config.simplified_transformer_config["model_name"])
+
+        # self.closest_expression_selector = torch.load("models/closest_expression_selector_model.pt", map_location=self.encoder.device)
 
         hidden_size = self.config.hidden_size
         intermediate_size = 128
@@ -83,8 +87,36 @@ class TimelineRegressor(nn.Module):
 
         return {**inputs, "start_token": start_tokens, "end_token": end_tokens, "modified_text": text}
 
-    def forward(self, text, labels=None, start_char_index=None, end_char_index=None):
+    def get_closest_time_expression(self, text, start_char_index, end_char_index, temporal_expressions):
+        best_score = 0
+        best_expression = None
+        for expression in temporal_expressions:
+            score = self.closest_expression_selector({"labels": None,
+                                                      "text": text,
+                                                     "start_char": start_char_index,
+                                                      "expression_char_start": expression["expression_char_start"]})
+            if score >= best_score:
+                best_score = score
+                best_expression = expression
+        return best_expression['value_minutes']
+
+    def get_closest_time_expression_by_distance(self, text, start_char_index, end_char_index, temporal_expressions):
+        best_score = 0
+        best_expression = None
+        for expression in temporal_expressions:
+            score = 100000 - min(abs(expression["start"] - end_char_index),
+                abs(expression["end"] - start_char_index))
+            if score >= best_score:
+                best_score = score
+                best_expression = expression
+        if best_expression is None:
+            return None
+        else:
+            return best_expression['value_minutes']
+
+    def forward(self, text, labels=None, start_char_index=None, end_char_index=None, temporal_expressions=None, admission_date_minutes=0):
         device = self.encoder.device
+        temporal_expressions = [json.loads(expression) for expression in temporal_expressions]
         tokenized = self.tokenize(text, start_char_index, end_char_index)
         outputs = self.encoder(input_ids=tokenized['input_ids'].to(device),
                                attention_mask=tokenized['attention_mask'].to(device))
@@ -116,10 +148,22 @@ class TimelineRegressor(nn.Module):
 
         # Optionally calculate loss if labels are provided
         label_scaling_factor = self.model_config.simplified_transformer_config["predicted_minutes_scaling_factor"] # based on paper https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9207839
+
+        # closest_time_minutes = [self.get_closest_time_expression(text, start_char_index, end_char_index, temporal_expressions)
+        #                         for text, start_char_index, end_char_index, temporal_expressions in zip(text, start_char_index, end_char_index, temporal_expressions)
+        #                         ]
+        closest_time_minutes = [self.get_closest_time_expression_by_distance(text, start_char_index, end_char_index, temporal_expressions)
+                                for text, start_char_index, end_char_index, temporal_expressions in zip(text, start_char_index, end_char_index, temporal_expressions)
+                                ]
         loss = None
         if labels is not None:
             loss_fn = nn.L1Loss()
+            # At this point, labels are relative to the admission time
+            # convert labels to relative to closest time expression
+            labels = [torch.tensor([label + admission_date_minutes[i] - closest_time_minutes[i] for i, label in enumerate(l)]) if j < 2 else l for j, l in enumerate(labels)]
+
             labels = [label / label_scaling_factor for label in labels]
+
             # Only compute loss for the first value
             if self.model_config.simplified_transformer_config['individually_train_regressor_number'] >= 0:
                 regressor_index = self.model_config.simplified_transformer_config['individually_train_regressor_number']
@@ -130,7 +174,15 @@ class TimelineRegressor(nn.Module):
             print(loss)
             print(regression_outputs)
             print(labels)
+
+        predictions = regression_outputs * label_scaling_factor
+        predictions = predictions.cpu().detach()
+        predictions[:, 0] -= admission_date_minutes
+        predictions[:, 1] -= admission_date_minutes
+        predictions[:, 0] += torch.tensor(closest_time_minutes)
+        predictions[:, 1] += torch.tensor(closest_time_minutes)
         return {
             "loss": loss,
-            "predictions": regression_outputs * label_scaling_factor
+            # TODO translate the predictions back to the original offset format
+            "predictions": predictions
         }

@@ -1,21 +1,32 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchtext.vocab import GloVe
 from torch.nn.utils.rnn import pad_sequence
+from gensim.models import KeyedVectors
+import numpy as np
 from models.model_config import ModelConfig
 
 
 class BiLSTMRegressor(nn.Module):
-    def __init__(self, model_config: ModelConfig):
+    def __init__(self, model_config: ModelConfig, glove_path='glove.840B.300d.word2vec.txt'):
         super().__init__()
         self.model_config = model_config
         self.embedding_dim = 300
         self.hidden_dim = 256
         self.num_layers = 2
-        self.glove = GloVe(name='840B', dim=self.embedding_dim)
-        self.word_to_idx = self.glove.stoi
-        self.embedding = nn.Embedding.from_pretrained(self.glove.vectors, freeze=True)
+
+        # Load GloVe vectors with gensim
+        self.glove = KeyedVectors.load_word2vec_format(glove_path, binary=False)
+        self.word_to_idx = {word: i + 1 for i, word in enumerate(self.glove.index_to_key)}
+        self.word_to_idx["<pad>"] = 0
+
+        # Build embedding matrix
+        vocab_size = len(self.word_to_idx)
+        embedding_matrix = np.zeros((vocab_size, self.embedding_dim))
+        for word, idx in self.word_to_idx.items():
+            if word in self.glove:
+                embedding_matrix[idx] = self.glove[word]
+        self.embedding = nn.Embedding.from_pretrained(torch.FloatTensor(embedding_matrix), freeze=True)
 
         self.lstm = nn.LSTM(self.embedding_dim, self.hidden_dim, num_layers=self.num_layers,
                             bidirectional=True, batch_first=True)
@@ -74,7 +85,7 @@ class BiLSTMRegressor(nn.Module):
             elif self.model_config.simplified_transformer_config["pooling_strategy"] == "max":
                 pooled_vec, _ = event_emb.max(dim=0)
             else:
-                pooled_vec = event_emb[0]  # Fallback to first token
+                pooled_vec = event_emb[0]
             pooled.append(pooled_vec)
         pooled = torch.stack(pooled)
 

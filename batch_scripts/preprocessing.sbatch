@@ -16,4 +16,4 @@ srun \
   -A lpt -p frida \
   --container-image /shared/home/timotej.knez/containers/modern_bert.sqfs \
   --container-mounts "$PWD":/workspace \
-  bash -c "cd /workspace; apt update; apt install -y curl pciutils; curl -fsSL https://ollama.com/install.sh | sh; pip install dspy trl; python3 main.py --script preprocess"
+  bash -c "cd /workspace; apt update; apt install -y curl pciutils; curl -fsSL https://ollama.com/install.sh | sh; pip install dspy trl torchtext; python3 main.py --script preprocess"

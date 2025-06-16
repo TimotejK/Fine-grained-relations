@@ -151,18 +151,24 @@ def evaluate_all_llms():
     # evaluate_llm_prompting(predictor, model_id="gemini_individual_structured")
     api_key = os.getenv("OPENAI_API_KEY")
     model = OpenAIModel(api_key=api_key)
-    predictor = EventTimePredictorSingle(model, use_structured_response=False)
-    evaluate_llm_prompting(predictor, model_id="chatgpt_individual_plain")
-    predictor = EventTimePredictorSingle(model, use_structured_response=True)
-    evaluate_llm_prompting(predictor, model_id="chatgpt_individual_structured")
+    # predictor = EventTimePredictorSingle(model, use_structured_response=False)
+    # evaluate_llm_prompting(predictor, model_id="chatgpt_individual_plain")
+    # predictor = EventTimePredictorSingle(model, use_structured_response=True)
+    # evaluate_llm_prompting(predictor, model_id="chatgpt_individual_structured")
+    #
+    # model = local_llm.OllamaModel(model_name="gemma3:27b")
+    # predictor = EventTimePredictorSingle(model, use_structured_response=False)
+    # evaluate_llm_prompting(predictor, model_id="local_gemma_individual_plain")
+    # predictor = EventTimePredictorSingle(model, use_structured_response=True)
+    # evaluate_llm_prompting(predictor, model_id="local_gemma_individual_structured")
 
     model = local_llm.OllamaModel(model_name="gemma3:27b")
-    predictor = EventTimePredictorSingle(model, use_structured_response=False)
-    evaluate_llm_prompting(predictor, model_id="local_gemma_individual_plain")
-    predictor = EventTimePredictorSingle(model, use_structured_response=True)
-    evaluate_llm_prompting(predictor, model_id="local_gemma_individual_structured")
-
+    predictor = EventTimePredictorBatch(model, use_structured_response=True)
+    evaluate_llm_prompting_batch_model(predictor, model_id="local_gemma_batch_structured")
+    api_key = os.getenv("OPENAI_API_KEY")
+    model = OpenAIModel(api_key=api_key)
     predictor = EventTimePredictorBatch(model, use_structured_response=True)
     evaluate_llm_prompting_batch_model(predictor, model_id="chatgpt_batch_structured")
+
 if __name__ == '__main__':
     evaluate_all_llms()

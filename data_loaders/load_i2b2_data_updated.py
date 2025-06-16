@@ -25,6 +25,30 @@ def parse_xml_file(xml_path, document_id):
     summary_id = Path(xml_path).stem
     events = []
     text = root.find("TEXT").text
+
+    # get all temporal expressions
+    temporal_expressions = []
+    for elem in root.iter('TIMEX3'):
+        time_id = elem.attrib.get('id')
+        value = elem.attrib.get('val')
+        type = elem.attrib.get('type')
+        start = int(elem.attrib.get('start'))
+        end = int(elem.attrib.get('end'))
+        if len(value) == 0:
+            continue
+        if type == "DATE": # example: 1995-05-08
+            temporal_expressions.append({"time_id": time_id, "value": value, "type": type, "start": start, "end": end})
+            pass
+        elif type == "TIME": # example: 1995-05-08T20:00
+            temporal_expressions.append({"time_id": time_id, "value": value, "type": type, "start": start, "end": end})
+            pass
+        elif type == "DURATION":
+            pass
+        elif type == "FREQUENCY":
+            pass
+        else:
+            raise Exception(f"Unknown timex type: {type}")
+
     for elem in root.iter('EVENT'):
         event_id = elem.attrib.get('id')
         start = int(elem.attrib.get('start'))
@@ -36,6 +60,7 @@ def parse_xml_file(xml_path, document_id):
             'start_char': start,
             'end_char': end,
             'text': text,
+            'temporal_expressions': temporal_expressions,
             'document_id': document_id
         })
 
@@ -285,6 +310,7 @@ def load_i2b2_absolute_data(test_split=False):
 
 if __name__ == '__main__':
     df = load_i2b2_absolute_data(test_split=True)
+    print(len(df[df["document_id"].isin(['101', '108', '113'])].reset_index(drop=True)))
     # df = df.iloc[:10]
     torch.save(df, 'test_data.pt')
     print(df.columns)

@@ -1,6 +1,6 @@
 class ModelConfig:
     def __init__(self):
-        self.model_type = "simplified_transformer" # simplified_transformer, full_transformer, lstm
+        self.model_type = "simplified_transformer" # simplified_transformer, full_transformer, lstm, closest_transformer
         self.simplified_transformer_config = {
             "model_name": "answerdotai/ModernBERT-base", # answerdotai/ModernBERT-base, emilyalsentzer/Bio_ClinicalBERT, Simonlee711/Clinical_ModernBERT
             "pooling_strategy": "mean", # mean, max, cls [use cls token instead of event embeddings]
@@ -8,6 +8,11 @@ class ModelConfig:
             "mark_events": True, # add <event> markers around te event: True, False
             "predicted_minutes_scaling_factor": 1, # divide the number of minutes by this value when computing loss to stabilize training
             "individually_train_regressor_number": -1
+        }
+        self.closest_expression_selector_config = {
+            "model_name": "answerdotai/ModernBERT-base", # answerdotai/ModernBERT-base, emilyalsentzer/Bio_ClinicalBERT, Simonlee711/Clinical_ModernBERT
+            "pooling_strategy": "mean", # mean, max, cls [use cls token instead of event embeddings]
+            "handle_too_long_text": "error", # error, cut
         }
         self.training_hyperparameters = {
             "learning_rate": 2e-5,
@@ -32,7 +37,11 @@ class ModelConfig:
             f"  Pooling Strategy: {self.simplified_transformer_config['pooling_strategy']}",
             f"  Handle Too Long Text: {self.simplified_transformer_config['handle_too_long_text']}",
             f"  Mark Events: {self.simplified_transformer_config['mark_events']}",
-            "  Predicted Minutes Scaling Factor: {self.simplified_transformer_config['predicted_minutes_scaling_factor']}",
+            f"  Predicted Minutes Scaling Factor: {self.simplified_transformer_config['predicted_minutes_scaling_factor']}",
+            "Closest Expression Selector Config:",
+            f"  Model Name: {self.closest_expression_selector_config['model_name']}",
+            f"  Pooling Strategy: {self.closest_expression_selector_config['pooling_strategy']}",
+            f"  Handle Too Long Text: {self.closest_expression_selector_config['handle_too_long_text']}",
             "Training Hyperparameters:",
             f"  Learning Rate: {self.training_hyperparameters['learning_rate']}",
             f"  Batch Size: {self.training_hyperparameters['batch_size']}",
@@ -54,6 +63,7 @@ class ModelConfig:
             "model_type": self.model_type,
             "simplified_transformer_config": self.simplified_transformer_config,
             "training_hyperparameters": self.training_hyperparameters,
+            "closest_expression_selector_config": self.closest_expression_selector_config,
         }
 
     @classmethod

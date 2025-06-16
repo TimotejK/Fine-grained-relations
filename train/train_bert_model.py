@@ -12,7 +12,7 @@ from tqdm import tqdm
 from data_loaders.dataset import TimelineDataset
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
 from evaluation.evaluate import evaluate
-from models import BertBasedModel, SimplifiedBertBasedModel, LSTMBasedModel
+from models import BertBasedModel, SimplifiedBertBasedModel, LSTMBasedModel, ClosestBertBasedModel
 from models.model_config import ModelConfig
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -24,7 +24,7 @@ def train(model, dataset, dataset_test, config, project_name="timeline_training"
 
     model.to(device)
 
-    simplified_model = config.model_type == "simplified_transformer" or config.model_type == "lstm"
+    simplified_model = config.model_type == "simplified_transformer" or config.model_type == "lstm" or config.model_type == "closest_transformer"
     epochs = config.training_hyperparameters["epochs"]
     batch_size = config.training_hyperparameters["batch_size"]
     lr = config.training_hyperparameters["learning_rate"]
@@ -95,13 +95,24 @@ def train(model, dataset, dataset_test, config, project_name="timeline_training"
 
             # Forward pass
             try:
-                outputs = model(
-                    text=batch['text'],
-                    labels=labels,
-                    start_char_index=batch['start_char'],
-                    end_char_index=batch['end_char']
-                )
-                loss = outputs['loss']
+                if config.model_type == "simplified_transformer":
+                    outputs = model(
+                        text=batch['text'],
+                        labels=labels,
+                        start_char_index=batch['start_char'],
+                        end_char_index=batch['end_char']
+                    )
+                    loss = outputs['loss']
+                elif config.model_type == "closest_transformer":
+                    outputs = model(
+                        text=batch['text'],
+                        labels=labels,
+                        start_char_index=batch['start_char'],
+                        end_char_index=batch['end_char'],
+                        temporal_expressions = batch['temporal_expressions'],
+                        admission_date_minutes = batch['admission_date_minutes']
+                    )
+                    loss = outputs['loss']
 
                 # Check for NaN loss
                 if torch.isnan(loss):
@@ -127,7 +138,7 @@ def train(model, dataset, dataset_test, config, project_name="timeline_training"
 
         # Validation phase
         model.eval()  # Set model to evaluation mode
-        eval_loss, eval_metrics = evaluate(model, dataloader_test, simplified_model=simplified_model)
+        eval_loss, eval_metrics = evaluate(model, dataloader_test, simplified_model=simplified_model, config=config)
 
         # Log metrics
         wandb.log({
@@ -163,7 +174,7 @@ def train(model, dataset, dataset_test, config, project_name="timeline_training"
 
     # Save final model
     save_model(model, model.tokenizer, f"results/{run_name}_final")
-    evaluate(model, dataloader_test, simplified_model=simplified_model, save_error_analysis=True, model_id=run_name)
+    evaluate(model, dataloader_test, simplified_model=simplified_model, save_error_analysis=True, model_id=run_name, config=config)
     wandb.finish()
     return eval_metrics
 
@@ -202,6 +213,8 @@ def train_and_evaluate_model_with_parameters(config):
         model = BertBasedModel.TimelineRegressor(config)
     elif config.model_type == "lstm":
         model = LSTMBasedModel.BiLSTMRegressor(config)
+    elif config.model_type == "closest_transformer":
+        model = ClosestBertBasedModel.TimelineRegressor(config)
 
     # Load and preprocess data
     dataframe = load_i2b2_absolute_data()
@@ -224,16 +237,8 @@ def train_and_evaluate_model_with_parameters(config):
 
 if __name__ == '__main__':
     config = ModelConfig()
-
-    # Adjust hyperparameters for more stable training
-    config.simplified_transformer_config["individually_train_regressor_number"] = -1  # Train all regressors
-    config.simplified_transformer_config["predicted_minutes_scaling_factor"] = 10000  # should improve stability
-    config.training_hyperparameters["seed"] = 42  # Set a fixed seed for reproducibility
-    config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
-    config.training_hyperparameters["weight_decay"] = 0.01   # Stronger regularization
-    config.training_hyperparameters["batch_size"] = 2       # Adjust batch size as needed
-    config.training_hyperparameters["epochs"] = 20           # More epochs with early stopping
-
+    config.training_hyperparameters["batch_size"] = 4
+    config.model_type = "closest_transformer"
     # Train with the improved configuration
     results = train_and_evaluate_model_with_parameters(config)
     print(f"Final evaluation results: {results}")
