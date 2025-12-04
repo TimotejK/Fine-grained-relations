@@ -239,6 +239,14 @@ if __name__ == '__main__':
     config = ModelConfig()
     config.training_hyperparameters["batch_size"] = 4
     config.model_type = "closest_transformer"
+    config.simplified_transformer_config["model_name"] = "bert-base-uncased"
+    config.simplified_transformer_config["model_name"] = "answerdotai/ModernBERT-base"
+    config.simplified_transformer_config["individually_train_regressor_number"] = -1  # Train all regressors
+    config.simplified_transformer_config["predicted_minutes_scaling_factor"] = 10000  # should improve stability
+    config.training_hyperparameters["seed"] = 42  # Set a fixed seed for reproducibility
+    config.training_hyperparameters["weight_decay"] = 1e-5  # Stronger regularization
+    config.training_hyperparameters["batch_size"] = 2  # Adjust batch size as needed
+    config.training_hyperparameters["epochs"] = 20  # More epochs with early stopping
     # Train with the improved configuration
     results = train_and_evaluate_model_with_parameters(config)
     print(f"Final evaluation results: {results}")

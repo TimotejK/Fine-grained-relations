@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:A100_80GB:1
-#SBATCH -o preprocessing.out
+#SBATCH -o out/preprocessing.out
 
 cd "${HOME}/Fine-grained-relations"
 

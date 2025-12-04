@@ -5,7 +5,7 @@ import pandas as pd
 
 
 class EventTimePredictorBatch:
-    def __init__(self, llm_api, use_structured_response=False):
+    def __init__(self, llm_api, use_structured_response=False, use_absolute_times=True):
         self.llm = llm_api
         self.time_units_to_minutes = {
             "minute": 1,
@@ -15,6 +15,7 @@ class EventTimePredictorBatch:
             "year": 525600  # Approximation (365 days in a year)
         }
         self.use_structured_response = use_structured_response
+        self.use_absolute_times = use_absolute_times
 
     def prepare_prompt(self, document, events):
         """
@@ -76,8 +77,49 @@ class EventTimePredictorBatch:
 
         if self.use_structured_response:
             # Use structured response format
-            prompt = (
-                """
+            if self.use_absolute_times:
+                prompt = (
+                    """
+**You are given a patient discharge summary with annotated events.**
+Each event is marked with a tag such as `<event1>`, `<event2>`, and so on.
+
+**Task:** For each annotated event, predict when it **started** and **ended**. Specify the time in years, months, days, hours, and minutes.
+
+**Output Format:** Return a JSON object containing an array with the following structure:
+
+```json
+"event_times": [
+  {{
+    "event_tag": "<event1>",
+    "start": "2004-01-01 19:35:00",
+    "end": "2004-01-31 08:12:00"
+  }},
+  {{
+    "event_tag": "<event2>",
+    "start": "2004-01-01 12:13:00",
+    "end": "2004-01-01 12:20:00"
+  }},
+  ...
+]
+```
+
+**Note:**
+
+* Report absolute times of each event.
+* If only the day of the event is defined in the text, try to estimate the time when the event is most likely to start and end.
+* Ensure each event in the summary is represented in the output.
+* As an event tag use literally <event1>, <event2>, and so on.
+
+**Summary:**
+
+```
+{summary}
+```
+                    """
+                )
+            else:
+                prompt = (
+                    """
 **You are given a patient discharge summary with annotated events.**
 Each event is marked with a tag such as `<event1>`, `<event2>`, and so on.
 
@@ -112,8 +154,8 @@ Each event is marked with a tag such as `<event1>`, `<event2>`, and so on.
 ```
 {summary}
 ```
-                """
-            )
+                    """
+                )
 
             class TimePoint(BaseModel):
                 years: int
@@ -125,48 +167,86 @@ Each event is marked with a tag such as `<event1>`, `<event2>`, and so on.
                 event_tag: str
                 start: TimePoint
                 end: TimePoint
+            class EventTimeISO(BaseModel):
+                event_tag: str
+                start: str
+                end: str
 
             class EventTimes(BaseModel):
                 event_times: list[EventTime]
 
-            response = self.llm.predict_schema(
-                prompt=prompt.format(summary=annotated_text),
-                schema=EventTimes
-            )
+            class EventTimesISO(BaseModel):
+                event_times: list[EventTimeISO]
+
+            if self.use_absolute_times:
+                response = self.llm.predict_schema(
+                    prompt=prompt.format(summary=annotated_text),
+                    schema=EventTimesISO
+                )
+            else:
+                response = self.llm.predict_schema(
+                    prompt=prompt.format(summary=annotated_text),
+                    schema=EventTimes
+                )
 
             predictions = []
-            for time in response.event_times:
-                event_tag = time.event_tag
-                start = time.start
-                end = time.end
-                start_minutes = (
-                        start.years * self.time_units_to_minutes["year"]
-                        + start.months * self.time_units_to_minutes["month"]
-                        + start.days * self.time_units_to_minutes["day"]
-                        + start.hours * self.time_units_to_minutes["hour"]
-                        + start.minutes
-                )
-                end_minutes = (
-                        end.years * self.time_units_to_minutes["year"]
-                        + end.months * self.time_units_to_minutes["month"]
-                        + end.days * self.time_units_to_minutes["day"]
-                        + end.hours * self.time_units_to_minutes["hour"]
-                        + end.minutes
-                )
-                # Map the event tag back to the event_id
-                event_id = event_mapping.get(event_tag)
-                if event_id is None:
-                    closest_key = difflib.get_close_matches(event_tag, event_mapping.keys(), n=1)
-                    if closest_key:
-                        event_id = event_mapping[closest_key[0]]
+            if response is not None:
+                for time in response.event_times:
+                    event_tag = time.event_tag
+                    start = time.start
+                    end = time.end
+                    BASE_DATETIME = pd.Timestamp("1900-01-01 00:00:00")
+                    if self.use_absolute_times:
+                        start_minutes = (pd.to_datetime(start
+                                                       , errors='coerce') - BASE_DATETIME).total_seconds() // 60
+                        end_minutes = (pd.to_datetime(end
+                                                       , errors='coerce') - BASE_DATETIME).total_seconds() // 60
+                        if pd.isna(start_minutes) or pd.isna(end_minutes):
+                            # start_minutes = admission_time
+                            # end_minutes = admission_time
+                            start_minutes = 0
+                            end_minutes = 0
+                            # continue
                     else:
-                        event_id = None
-                if event_id is not None:
-                    predictions.append({
-                        "event_id": event_id,
-                        "predicted_start_time_minutes": start_minutes + admission_time,
-                        "predicted_end_time_minutes": end_minutes + admission_time
-                    })
+                        start_minutes = (
+                                start.years * self.time_units_to_minutes["year"]
+                                + start.months * self.time_units_to_minutes["month"]
+                                + start.days * self.time_units_to_minutes["day"]
+                                + start.hours * self.time_units_to_minutes["hour"]
+                                + start.minutes
+                        )
+                        end_minutes = (
+                                end.years * self.time_units_to_minutes["year"]
+                                + end.months * self.time_units_to_minutes["month"]
+                                + end.days * self.time_units_to_minutes["day"]
+                                + end.hours * self.time_units_to_minutes["hour"]
+                                + end.minutes
+                        )
+                    # Map the event tag back to the event_id
+                    event_id = event_mapping.get(event_tag)
+                    if event_id is None:
+                        closest_key = difflib.get_close_matches(event_tag, event_mapping.keys(), n=1)
+                        if closest_key:
+                            event_id = event_mapping[closest_key[0]]
+                        else:
+                            event_id = None
+                    if event_id is not None:
+                        if self.use_absolute_times:
+                            predictions.append({
+                                "event_id": event_id,
+                                # "predicted_start_time": f"{start.years}-{start.months}-{start.days} {start.hours}:{start.minutes}:00",
+                                "predicted_start_time": start,
+                                # "predicted_end_time": f"{end.years}-{end.months}-{end.days} {end.hours}:{end.minutes}:00",
+                                "predicted_end_time": end,
+                                "predicted_start_time_minutes": start_minutes,
+                                "predicted_end_time_minutes": end_minutes
+                            })
+                        else:
+                            predictions.append({
+                                "event_id": event_id,
+                                "predicted_start_time_minutes": start_minutes + admission_time,
+                                "predicted_end_time_minutes": end_minutes + admission_time
+                            })
 
             return predictions, ground_truth
 

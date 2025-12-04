@@ -1,3 +1,6 @@
+import math
+from math import floor
+
 import torch
 from sklearn.metrics import precision_score, recall_score, f1_score
 
@@ -26,7 +29,15 @@ def compute_metrics(predicted_starts, predicted_ends, predicted_durations, gold_
     correct_start = 0
     correct_end = 0
     correct_duration = 0
+    correct_start_expanded = 0
+    correct_end_expanded = 0
+    correct_duration_expanded = 0
     n = 0
+
+    # For MAE calculation
+    start_errors = []
+    end_errors = []
+    duration_errors = []
     for i in range(len(predicted_starts)):
         if isinstance(predicted_starts[i], tuple):
             pred_start_time = predicted_starts[i][0]
@@ -55,23 +66,108 @@ def compute_metrics(predicted_starts, predicted_ends, predicted_durations, gold_
             pred_dur_lower = predicted_durations[i] - 60
             pred_dur_upper = predicted_durations[i] + 60
 
-        if gold_starts[i][1] <= pred_start_time <= gold_starts[i][2]:
+        # Check for NaN values and skip or handle them
+        if (math.isnan(pred_start_time) or math.isnan(pred_end_time) or math.isnan(pred_dur_time)):
+            print(f"Warning: NaN detected in predictions for sample {i}")
+            print(f"  pred_start_time: {pred_start_time}")
+            print(f"  pred_end_time: {pred_end_time}")
+            print(f"  pred_dur_time: {pred_dur_time}")
+
+        gold_start_lower = gold_starts[i][1]
+        gold_start_upper = gold_starts[i][2]
+        gold_end_lower = gold_ends[i][1]
+        gold_end_upper = gold_ends[i][2]
+        gold_duration_lower = gold_durations[i][1]
+        gold_duration_upper = gold_durations[i][2]
+
+        if gold_start_lower > gold_start_upper:
+            gold_start_upper, gold_start_lower = gold_start_lower, gold_start_upper
+        if gold_end_lower > gold_end_upper:
+            gold_end_upper, gold_end_lower = gold_end_lower, gold_end_upper
+        if gold_duration_lower > gold_duration_upper:
+            gold_duration_upper, gold_duration_lower = gold_duration_lower, gold_duration_upper
+
+
+        import pandas as pd
+        import datetime
+
+        # Safe timestamp conversion with NaN checking
+        try:
+            # print("predicted start:", pd.Timestamp("1900-01-01 00:00:00") + datetime.timedelta(minutes=pred_start_time))
+            # print("true start (lower):", pd.Timestamp("1900-01-01 00:00:00") + datetime.timedelta(minutes=gold_start_lower))
+            # print("true start (upper):", pd.Timestamp("1900-01-01 00:00:00") + datetime.timedelta(minutes=gold_start_upper))
+            # print("predicted end:", pd.Timestamp("1900-01-01 00:00:00") + datetime.timedelta(minutes=pred_end_time))
+            # print("true end (lower):", pd.Timestamp("1900-01-01 00:00:00") + datetime.timedelta(minutes=gold_end_lower))
+            # print("true end (upper):", pd.Timestamp("1900-01-01 00:00:00") + datetime.timedelta(minutes=gold_end_upper))
+            # print()
+            pass
+        except (ValueError, OverflowError) as e:
+            print(f"Error in timestamp conversion for sample {i}: {e}")
+            print(f"Values: start={pred_start_time}, end={pred_end_time}, duration={pred_dur_time}")
+            continue
+
+        def round_to_day(minutes):
+            if math.isnan(minutes):
+                return float('nan')
+            return floor(minutes / (24 * 60)) * (24 * 60)
+
+        if gold_start_lower <= pred_start_time <= gold_start_upper:
             correct_start += 1
-        if gold_ends[i][1] <= pred_end_time <= gold_ends[i][2]:
+        if gold_end_lower <= pred_end_time <= gold_end_upper:
             correct_end += 1
 
-        if gold_durations[i][1] <= pred_dur_time <= gold_durations[i][2]:
+        if gold_duration_lower <= pred_dur_time <= gold_duration_upper:
             correct_duration += 1
+
+        if round_to_day(gold_start_lower) <= round_to_day(pred_start_time) <= round_to_day(gold_start_upper):
+            correct_start_expanded += 1
+        if round_to_day(gold_end_lower) <= round_to_day(pred_end_time) <= round_to_day(gold_end_upper):
+            correct_end_expanded += 1
+
+        if round_to_day(gold_duration_lower) <= round_to_day(pred_dur_time) <= round_to_day(gold_duration_upper):
+            correct_duration_expanded += 1
+
+        # Calculate MAE using the middle of the gold range as the target
+        gold_start_mid = gold_starts[i][0] if isinstance(gold_starts[i], tuple) else gold_starts[i]
+        gold_end_mid = gold_ends[i][0] if isinstance(gold_ends[i], tuple) else gold_ends[i]
+        gold_duration_mid = gold_durations[i][0] if isinstance(gold_durations[i], tuple) else gold_durations[i]
+
+        if not math.isnan(pred_start_time) and not math.isnan(gold_start_mid):
+            start_errors.append(abs(pred_start_time - gold_start_mid))
+        if not math.isnan(pred_end_time) and not math.isnan(gold_end_mid):
+            end_errors.append(abs(pred_end_time - gold_end_mid))
+        if not math.isnan(pred_dur_time) and not math.isnan(gold_duration_mid):
+            duration_errors.append(abs(pred_dur_time - gold_duration_mid))
+
         n += 1
+
+    # Calculate MAE
+    start_mae = sum(start_errors) / len(start_errors) if len(start_errors) > 0 else float('inf')
+    end_mae = sum(end_errors) / len(end_errors) if len(end_errors) > 0 else float('inf')
+    duration_mae = sum(duration_errors) / len(duration_errors) if len(duration_errors) > 0 else float('inf')
 
     return {
         "correct_start": correct_start,
         "correct_end": correct_end,
         "correct_duration": correct_duration,
+        "correct_start_expanded": correct_start_expanded,
+        "correct_end_expanded": correct_end_expanded,
+        "correct_duration_expanded": correct_duration_expanded,
         "n": n,
-        "precision_start": correct_start / n,
-        "precision_end": correct_end / n,
-        "precision_duration": correct_duration / n
+        "precision_start": correct_start / n if n > 0 else 0,
+        "precision_end": correct_end / n if n > 0 else 0,
+        "precision_duration": correct_duration / n if n > 0 else 0,
+        "precision_start_expanded": correct_start_expanded / n if n > 0 else 0,
+        "precision_end_expanded": correct_end_expanded / n if n > 0 else 0,
+        "precision_duration_expanded": correct_duration_expanded / n if n > 0 else 0,
+        # MAE metrics
+        "start_mae": start_mae,
+        "end_mae": end_mae,
+        "duration_mae": duration_mae,
+        # Accuracy metrics (using precision as accuracy)
+        "start_accuracy": correct_start / n if n > 0 else 0,
+        "end_accuracy": correct_end / n if n > 0 else 0,
+        "duration_accuracy": correct_duration / n if n > 0 else 0,
     }
             
 

@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=1
-#SBATCH -o lstm_train.out
+#SBATCH -o out/lstm_train.out
 
 cd "${HOME}/Fine-grained-relations"
 

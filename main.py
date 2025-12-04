@@ -22,7 +22,7 @@ def main():
         "--script",
         type=str,
         choices=["train_default_bert_model", "train_bert_model", "preprocess", "finetune_llm", "prompting_llm",
-                 "train_lstm_model", "train_time_finder"],
+                 "train_lstm_model", "train_time_finder", "finetuning_hyperparameter_search"],
         help="The script to run. Currently supported: train_bert_model, preprocess, finetune_llm, prompting_llm"
     )
     parser.add_argument(
@@ -75,24 +75,49 @@ def main():
         print("Running train_bert_model...")
         config = ModelConfig()
         config.model_type = "closest_transformer"
+        # config.simplified_transformer_config["model_name"] = "bert-base-uncased"
+        config.simplified_transformer_config["model_name"] = "answerdotai/ModernBERT-base"
 
         # Adjust hyperparameters for more stable training
         config.simplified_transformer_config["individually_train_regressor_number"] = -1  # Train all regressors
-        config.simplified_transformer_config["predicted_minutes_scaling_factor"] = 1  # should improve stability
+        config.simplified_transformer_config["predicted_minutes_scaling_factor"] = 10000  # should improve stability
         config.training_hyperparameters["seed"] = 42  # Set a fixed seed for reproducibility
-        config.training_hyperparameters["weight_decay"] = 0.01  # Stronger regularization
-        config.training_hyperparameters["batch_size"] = 16  # Adjust batch size as needed
+        config.training_hyperparameters["weight_decay"] = 1e-5  # Stronger regularization
+        config.training_hyperparameters["batch_size"] = 8  # Adjust batch size as needed
         config.training_hyperparameters["epochs"] = 20  # More epochs with early stopping
 
-        config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
-        train_and_evaluate_model_with_parameters(config)
-        config.training_hyperparameters["learning_rate"] = 2e-3  # Higher learning rate
-        train_and_evaluate_model_with_parameters(config)
-        config.training_hyperparameters["learning_rate"] = 2e-1  # Very high learning rate
-        train_and_evaluate_model_with_parameters(config)
+        # config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
+        # train_and_evaluate_model_with_parameters(config)
+        # config.training_hyperparameters["learning_rate"] = 2e-3  # Higher learning rate
+        # train_and_evaluate_model_with_parameters(config)
+        # config.training_hyperparameters["learning_rate"] = 2e-1  # Very high learning rate
+        # train_and_evaluate_model_with_parameters(config)
 
         # config.simplified_transformer_config["pooling_strategy"] = "mean"
         # config.simplified_transformer_config["model_name"] = "Simonlee711/Clinical_ModernBERT"
+        # config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
+        # train_and_evaluate_model_with_parameters(config)
+        # config.training_hyperparameters["learning_rate"] = 2e-3  # Higher learning rate
+        # train_and_evaluate_model_with_parameters(config)
+        # config.training_hyperparameters["learning_rate"] = 2e-1  # Very high learning rate
+        # train_and_evaluate_model_with_parameters(config)
+
+        config.model_type = "closest_transformer"
+        config.training_hyperparameters["learning_rate"] = 2e-3  # Higher learning rate
+        # config.simplified_transformer_config["model_name"] = "answerdotai/ModernBERT-base"
+        # train_and_evaluate_model_with_parameters(config)
+        # config.simplified_transformer_config["model_name"] = "Simonlee711/Clinical_ModernBERT"
+        # train_and_evaluate_model_with_parameters(config)
+
+        config.simplified_transformer_config["handle_too_long_text"] = "cut"
+        config.model_type = "simplified_transformer"
+        config.simplified_transformer_config["model_name"] = "bert-base-uncased"
+        train_and_evaluate_model_with_parameters(config)
+        config.simplified_transformer_config["model_name"] = "answerdotai/ModernBERT-base"
+        train_and_evaluate_model_with_parameters(config)
+        config.simplified_transformer_config["model_name"] = "Simonlee711/Clinical_ModernBERT"
+        train_and_evaluate_model_with_parameters(config)
+
         # config.training_hyperparameters["learning_rate"] = 2e-5  # Lower learning rate
         # train_and_evaluate_model_with_parameters(config)
         #
@@ -131,6 +156,10 @@ def main():
     if args.script == "finetune_llm":
         from llm_finetuning.finetuning import finetune_on_i2b2
         finetune_on_i2b2(args.model)
+
+    if args.script == "finetuning_hyperparameter_search":
+        from llm_finetuning import hyperparameter_tuning
+        hyperparameter_tuning.main()
 
     if args.script == "prompting_llm":
         # start ollama on hpc

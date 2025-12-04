@@ -1,5 +1,6 @@
 import os
 
+import pandas as pd
 import torch
 
 from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
@@ -111,25 +112,31 @@ def evaluate_llm_prompting_batch_model(predictor, model_id):
     for document_id, predictions in predictor.predict(dataframe_test):
         print(document_id, predictions)
         for prediction in predictions:
-            pred_start = prediction["predicted_start_time_minutes"]
-            pred_end = prediction["predicted_end_time_minutes"]
-            s = (pred_start, pred_start + 60, pred_start - 60)
-            predictions_starts.append(s)
-            e = (pred_end, pred_end + 60, pred_end - 60)
-            predictions_ends.append(e)
-            d = (pred_end - pred_start, pred_end - pred_start - 60, pred_end - pred_start + 60)
-            predictions_durations.append(d)
-            gs = (prediction["start_time_minutes"], prediction["start_upper_minutes"], prediction["start_lower_minutes"])
-            gold_starts.append(gs)
-            ge = (prediction["end_time_minutes"], prediction["end_upper_minutes"], prediction["end_lower_minutes"])
-            gold_ends.append(ge)
-            gd = (prediction["duration_minutes"], prediction["duration_upper_minutes"], prediction["duration_lower_minutes"])
-            gold_durations.append(gd)
-            store_prediction_for_error_analysis(model_id, document_id, dataframe_test[dataframe_test["document_id"] == document_id].iloc[0]["text"],
-                    prediction["event_id"],
-                    int(dataframe_test[(dataframe_test["document_id"] == document_id) & (dataframe_test["event_id"] == prediction["event_id"])].iloc[0]["start_char"]),
-                    int(dataframe_test[(dataframe_test["document_id"] == document_id) & (dataframe_test["event_id"] == prediction["event_id"])].iloc[0]["end_char"]),
-                    s,e,d,gs,ge,gd)
+            try:
+                pred_start = prediction["predicted_start_time_minutes"]
+                pred_end = prediction["predicted_end_time_minutes"]
+                if pd.isna(pred_start) or pd.isna(pred_end):
+                    continue
+                s = (pred_start, pred_start + 60, pred_start - 60)
+                predictions_starts.append(s)
+                e = (pred_end, pred_end + 60, pred_end - 60)
+                predictions_ends.append(e)
+                d = (pred_end - pred_start, pred_end - pred_start - 60, pred_end - pred_start + 60)
+                predictions_durations.append(d)
+                gs = (prediction["start_time_minutes"], prediction["start_upper_minutes"], prediction["start_lower_minutes"])
+                gold_starts.append(gs)
+                ge = (prediction["end_time_minutes"], prediction["end_upper_minutes"], prediction["end_lower_minutes"])
+                gold_ends.append(ge)
+                gd = (prediction["duration_minutes"], prediction["duration_upper_minutes"], prediction["duration_lower_minutes"])
+                gold_durations.append(gd)
+                store_prediction_for_error_analysis(model_id, document_id, dataframe_test[dataframe_test["document_id"] == document_id].iloc[0]["text"],
+                        prediction["event_id"],
+                        int(dataframe_test[(dataframe_test["document_id"] == document_id) & (dataframe_test["event_id"] == prediction["event_id"])].iloc[0]["start_char"]),
+                        int(dataframe_test[(dataframe_test["document_id"] == document_id) & (dataframe_test["event_id"] == prediction["event_id"])].iloc[0]["end_char"]),
+                        s,e,d,gs,ge,gd)
+            except Exception as e:
+                print(f"Error processing prediction for document {document_id}: {e}")
+                continue
 
         eval_metrics_partial = compute_metrics(predictions_starts, predictions_ends, predictions_durations, gold_starts,
                                                gold_ends, gold_durations)
@@ -149,8 +156,8 @@ def evaluate_all_llms():
     # evaluate_llm_prompting(predictor, model_id="gemini_individual_plain")
     # predictor = ZeroShotPromptingModel(model, use_structured_response=True)
     # evaluate_llm_prompting(predictor, model_id="gemini_individual_structured")
-    api_key = os.getenv("OPENAI_API_KEY")
-    model = OpenAIModel(api_key=api_key)
+    # api_key = os.getenv("OPENAI_API_KEY")
+    # model = OpenAIModel(api_key=api_key)
     # predictor = EventTimePredictorSingle(model, use_structured_response=False)
     # evaluate_llm_prompting(predictor, model_id="chatgpt_individual_plain")
     # predictor = EventTimePredictorSingle(model, use_structured_response=True)
@@ -162,13 +169,20 @@ def evaluate_all_llms():
     # predictor = EventTimePredictorSingle(model, use_structured_response=True)
     # evaluate_llm_prompting(predictor, model_id="local_gemma_individual_structured")
 
-    model = local_llm.OllamaModel(model_name="gemma3:27b")
-    predictor = EventTimePredictorBatch(model, use_structured_response=True)
-    evaluate_llm_prompting_batch_model(predictor, model_id="local_gemma_batch_structured")
+    # model = local_llm.OllamaModel(model_name="gemma3:27b")
+    # predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=True)
+    # evaluate_llm_prompting_batch_model(predictor, model_id="local_gemma_batch_structured_absolute")
+
     api_key = os.getenv("OPENAI_API_KEY")
     model = OpenAIModel(api_key=api_key)
-    predictor = EventTimePredictorBatch(model, use_structured_response=True)
-    evaluate_llm_prompting_batch_model(predictor, model_id="chatgpt_batch_structured")
+    predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=True)
+    evaluate_llm_prompting_batch_model(predictor, model_id="chatgpt_batch_structured_absolute")
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    model = OpenAIModel(api_key=api_key)
+    predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=False)
+    evaluate_llm_prompting_batch_model(predictor, model_id="chatgpt_batch_structured_relative")
+
 
 if __name__ == '__main__':
     evaluate_all_llms()

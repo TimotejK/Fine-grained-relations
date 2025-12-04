@@ -98,9 +98,10 @@ class SelectingTimeExressionsDataset(Dataset):
         }}
 
 class TimelineDataset(Dataset):
-    def __init__(self, dataframe, use_qa_format=False):
+    def __init__(self, dataframe, use_qa_format=False, use_absolute_qa=True):
         self.df = dataframe
         self.use_qa_format = use_qa_format
+        self.use_absolute_qa = use_absolute_qa
 
     def __len__(self):
         return len(self.df)
@@ -123,6 +124,12 @@ class TimelineDataset(Dataset):
         end_minutes_lower = [minutes_in_unit[unit] * (value-1) for unit, value in zip(end_unit, prediction["end_value"].detach().cpu())]
         end_minutes_upper = [minutes_in_unit[unit] * (value+1) for unit, value in zip(end_unit, prediction["end_value"].detach().cpu())]
         return (start_minutes, start_minutes_lower, start_minutes_upper), (end_minutes, end_minutes_lower, end_minutes_upper)
+
+    def convert_time_in_minutes_to_iso(self, time_in_minutes):
+        reference_date = datetime(1900, 1, 1)
+        delta = timedelta(minutes=time_in_minutes)
+        target_date = reference_date + delta
+        return target_date.strftime('%Y-%m-%d %H:%M:%S')
 
     def convert_time_in_minutes_to_description(self, time_in_minutes):
         time_units_to_minutes = {
@@ -156,16 +163,39 @@ class TimelineDataset(Dataset):
 
     def __getitem_qa_format(self, idx):
         row = self.df.iloc[idx]
-        question = ("You are given a patient discharge summary. An event of interest is marked within `<event>` tags in the text. "
-                    "Your task is to estimate when this event started and ended relative to the patient's admission date.)\n"
-                    "Provide your estimates **as clearly formatted time intervals** (e.g., \"START: 2 days before admission, " 
-                    "END: 3 hours after admission\"). If exact timing is unclear, provide your best guess based on the available information.\n")
-                    # "**Text:**\n"
-                    # f"{row['text']}\n")
-        answer = "START: " + self.convert_time_in_minutes_to_description(row["start_time_minutes"]) + ", END: " + self.convert_time_in_minutes_to_description(row["end_time_minutes"])
+        medical_text = row['text']
+        # annotate event
+        medical_text = (medical_text[:row['start_char']] + "<event>" + medical_text[row['start_char']:row['end_char']] +
+                        "</event>" + medical_text[row['end_char']:])
+        if self.use_absolute_qa:
+            question = (
+                "You are given a patient discharge summary. An event of interest is marked within `<event>` tags in the text. "
+                "Your task is to estimate when this event started and ended.\n"
+                "Provide your estimates **as clearly formatted time in the format yyyy-MM-dd HH:mm:ss** (e.g., \"START: 2025-08-11 09:00:00, "
+                "END: 2025-08-11 10:30:00\"). If exact timing is unclear, provide your best guess based on the available information. "
+                "When only the date is given in a document, guess the start and end times.\n")
+            # "**Text:**\n"
+            # f"{row['text']}\n")
+            answer = "START: " + self.convert_time_in_minutes_to_iso(
+                row["start_time_minutes"]) + ", END: " + self.convert_time_in_minutes_to_iso(
+                row["end_time_minutes"])
+        else:
+            medical_text = row['text']
+            # annotate event
+            medical_text = (
+                        medical_text[:row['start_char']] + "<event>" + medical_text[row['start_char']:row['end_char']] +
+                        "</event>" + medical_text[row['end_char']:])
+            question = ("You are given a patient discharge summary. An event of interest is marked within `<event>` tags in the text. "
+                        "Your task is to estimate when this event started and ended relative to the patient's admission date.\n"
+                        "Also extract events if there is a clear temporal relation between two events, either the amount of time that has passed or a relation like before/after.\n"
+                        "Provide your estimates **as clearly formatted time intervals** (e.g., \"START: 2 days before admission, " 
+                        "END: 3 hours after admission\"). If exact timing is unclear, provide your best guess based on the available information.\n")
+                        # "**Text:**\n"
+                        # f"{row['text']}\n")
+            answer = "START: " + self.convert_time_in_minutes_to_description(row["start_time_minutes"]) + ", END: " + self.convert_time_in_minutes_to_description(row["end_time_minutes"])
         return {
             "output": answer,
-            "input": row['text'],
+            "input": medical_text,
             "instruction": question,
             "row": row.to_dict()
         }

@@ -5,19 +5,26 @@ from transformers import AutoModel, AutoConfig, AutoTokenizer
 import torch.nn as nn
 
 from models.model_config import ModelConfig
-
+import spacy
+from collections import deque
 
 class TimelineRegressor(nn.Module):
     def __init__(self, model_config: ModelConfig):
         super().__init__()
         self.model_config = model_config
-        self.config = AutoConfig.from_pretrained(model_config.simplified_transformer_config["model_name"])
-        self.encoder = AutoModel.from_pretrained(model_config.simplified_transformer_config["model_name"])
-        self.tokenizer = AutoTokenizer.from_pretrained(model_config.simplified_transformer_config["model_name"])
+        self.config = AutoConfig.from_pretrained(model_config.closest_expression_selector_config["model_name"])
+        self.encoder = AutoModel.from_pretrained(model_config.closest_expression_selector_config["model_name"])
+        self.tokenizer = AutoTokenizer.from_pretrained(model_config.closest_expression_selector_config["model_name"])
+
+        self.nlp = spacy.load("en_core_web_sm")
 
         # self.closest_expression_selector = torch.load("models/closest_expression_selector_model.pt", map_location=self.encoder.device)
 
-        hidden_size = self.config.hidden_size
+        if (self.model_config.simplified_transformer_config["pooling_strategy"] == "mean" or
+                self.model_config.simplified_transformer_config["pooling_strategy"] == "max"):
+            hidden_size = self.config.hidden_size * 3
+        else:
+            hidden_size = self.config.hidden_size
         intermediate_size = 128
 
         # Regressor for start and end (first two values)
@@ -46,7 +53,7 @@ class TimelineRegressor(nn.Module):
         """Softplus activation: ln(1 + e^x)"""
         return torch.log(1 + torch.exp(x))
 
-    def tokenize(self, text, start_char, end_char):
+    def tokenize(self, text, start_char, end_char, expression_start_chars, expression_end_chars):
         start_char_copy = [int(s) for s in start_char]
         end_char_copy = [int(e) for e in end_char]
         if self.model_config.simplified_transformer_config["mark_events"]:
@@ -67,6 +74,26 @@ class TimelineRegressor(nn.Module):
                 modified_texts.append(t)
             text = modified_texts
 
+        # If text is longer than self.tokenizer.model_max_length, trim the text so that start_char[i] is within the text, and update start_char and end_char accordingly
+        # if any(len(t) > self.tokenizer.model_max_length for t in text):
+        #     trimmed_texts = []
+        #     for i, t in enumerate(text):
+        #         if len(t) > self.tokenizer.model_max_length:
+        #             start = max(0, start_char_copy[i] - self.tokenizer.model_max_length // 2)
+        #             end = min(len(t), start + self.tokenizer.model_max_length)
+        #             # Ensure start_char is within the trimmed text
+        #             if start_char_copy[i] < start:
+        #                 start = start_char_copy[i]
+        #                 end = min(len(t), start + self.tokenizer.model_max_length)
+        #             trimmed_text = t[start:end]
+        #             # Update start_char and end_char to be relative to the trimmed text
+        #             start_char_copy[i] -= start
+        #             end_char_copy[i] -= start
+        #             trimmed_texts.append(trimmed_text)
+        #         else:
+        #             trimmed_texts.append(t)
+        #     text = trimmed_texts
+
         inputs = self.tokenizer(
             text,
             padding=True,
@@ -81,11 +108,18 @@ class TimelineRegressor(nn.Module):
 
         start_tokens = []
         end_tokens = []
+        expression_start_tokens = []
+        expression_end_tokens = []
         for i in range(len(inputs["input_ids"])):
+            if inputs.char_to_token(i, end_char_copy[i]) is None:
+                print("Text too long, end_char_copy[i] is None")
             start_tokens.append(inputs.char_to_token(i, start_char_copy[i]))
             end_tokens.append(inputs.char_to_token(i, end_char_copy[i]))
+            expression_start_tokens.append(inputs.char_to_token(i, expression_start_chars[i]))
+            expression_end_tokens.append(inputs.char_to_token(i, expression_end_chars[i]))
 
-        return {**inputs, "start_token": start_tokens, "end_token": end_tokens, "modified_text": text}
+        return {**inputs, "start_token": start_tokens, "end_token": end_tokens, "modified_text": text,
+                "expression_start_tokens": expression_start_tokens, "expression_end_tokens": expression_end_tokens}
 
     def get_closest_time_expression(self, text, start_char_index, end_char_index, temporal_expressions):
         best_score = 0
@@ -98,7 +132,48 @@ class TimelineRegressor(nn.Module):
             if score >= best_score:
                 best_score = score
                 best_expression = expression
-        return best_expression['value_minutes']
+        return best_expression
+
+    def get_closest_time_expression_by_syntax(self, text, start_char_index, end_char_index, temporal_expressions):
+        doc = self.nlp(text)
+
+        # Locate the event token (or the head token of the span)
+        event_tokens = [token for token in doc if token.idx >= start_char_index and token.idx < end_char_index]
+        if not event_tokens:
+            return None
+        event_root = event_tokens[0].head if len(event_tokens) > 1 else event_tokens[0]
+
+        def tree_distance(token1, token2):
+            """Compute number of hops between token1 and token2 in dependency tree."""
+            visited = set()
+            queue = deque([(token1, 0)])
+            while queue:
+                current, dist = queue.popleft()
+                if current == token2:
+                    return dist
+                visited.add(current)
+                neighbors = list(current.children) + ([current.head] if current != current.head else [])
+                for neighbor in neighbors:
+                    if neighbor not in visited:
+                        queue.append((neighbor, dist + 1))
+            return abs(token1.idx - token2.idx)  # Return character distance if not connected
+
+        best_distance = float('inf')
+        best_expression = None
+
+        for expression in temporal_expressions:
+            # Find head token of temporal expression
+            time_tokens = [token for token in doc if token.idx >= expression["start"] and token.idx < expression["end"]]
+            if not time_tokens:
+                continue
+            time_root = time_tokens[0].head if len(time_tokens) > 1 else time_tokens[0]
+
+            distance = tree_distance(event_root, time_root)
+            if distance < best_distance:
+                best_distance = distance
+                best_expression = expression
+
+        return best_expression if best_expression else None
 
     def get_closest_time_expression_by_distance(self, text, start_char_index, end_char_index, temporal_expressions):
         best_score = 0
@@ -117,7 +192,14 @@ class TimelineRegressor(nn.Module):
     def forward(self, text, labels=None, start_char_index=None, end_char_index=None, temporal_expressions=None, admission_date_minutes=0):
         device = self.encoder.device
         temporal_expressions = [json.loads(expression) for expression in temporal_expressions]
-        tokenized = self.tokenize(text, start_char_index, end_char_index)
+        closest_expressions = [
+            self.get_closest_time_expression_by_syntax(text, start_char_index, end_char_index, temporal_expressions)
+            for text, start_char_index, end_char_index, temporal_expressions in
+            zip(text, start_char_index, end_char_index, temporal_expressions)
+            ]
+
+
+        tokenized = self.tokenize(text, start_char_index, end_char_index, [ex['start'] for ex in closest_expressions],[ex['end'] for ex in closest_expressions])
         outputs = self.encoder(input_ids=tokenized['input_ids'].to(device),
                                attention_mask=tokenized['attention_mask'].to(device))
         if self.model_config.simplified_transformer_config["pooling_strategy"] == "cls":
@@ -127,12 +209,15 @@ class TimelineRegressor(nn.Module):
             token_embeddings = outputs.last_hidden_state
             embeddings = []
             for i in range(token_embeddings.size()[0]):
+                expression_embeddings = token_embeddings[i, tokenized['expression_start_tokens'][i]:tokenized['expression_end_tokens'][i]+1, :]
                 event_embeddings = token_embeddings[i, tokenized['start_token'][i]:tokenized['end_token'][i], :]
                 if self.model_config.simplified_transformer_config["pooling_strategy"] == "mean":
                     event_embeddings_pooled = torch.mean(event_embeddings, dim=0)
+                    expression_embeddings_pooled = torch.mean(expression_embeddings, dim=0)
                 elif self.model_config.simplified_transformer_config["pooling_strategy"] == "max":
                     event_embeddings_pooled, _ = torch.max(event_embeddings, dim=0)
-                embeddings.append(event_embeddings_pooled)
+                    expression_embeddings_pooled, _ = torch.max(expression_embeddings, dim=0)
+                embeddings.append(torch.cat((event_embeddings_pooled, expression_embeddings_pooled, (event_embeddings_pooled - expression_embeddings_pooled))))
                 pass
             embeddings = torch.stack(embeddings)
 
@@ -152,9 +237,10 @@ class TimelineRegressor(nn.Module):
         # closest_time_minutes = [self.get_closest_time_expression(text, start_char_index, end_char_index, temporal_expressions)
         #                         for text, start_char_index, end_char_index, temporal_expressions in zip(text, start_char_index, end_char_index, temporal_expressions)
         #                         ]
-        closest_time_minutes = [self.get_closest_time_expression_by_distance(text, start_char_index, end_char_index, temporal_expressions)
-                                for text, start_char_index, end_char_index, temporal_expressions in zip(text, start_char_index, end_char_index, temporal_expressions)
-                                ]
+        # closest_time_minutes = [self.get_closest_time_expression_by_distance(text, start_char_index, end_char_index, temporal_expressions)
+        #                         for text, start_char_index, end_char_index, temporal_expressions in zip(text, start_char_index, end_char_index, temporal_expressions)
+        #                         ]
+        closest_time_minutes = [time['value_minutes'] for time in closest_expressions]
         loss = None
         if labels is not None:
             loss_fn = nn.L1Loss()
@@ -183,6 +269,5 @@ class TimelineRegressor(nn.Module):
         predictions[:, 1] += torch.tensor(closest_time_minutes)
         return {
             "loss": loss,
-            # TODO translate the predictions back to the original offset format
             "predictions": predictions
         }

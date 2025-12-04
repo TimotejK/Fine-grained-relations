@@ -21,6 +21,12 @@ psutil>=5.9.0
 # Visualization / Testing (optional)
 matplotlib>=3.8.0
 
+# Hyperparameter optimization
+optuna>=3.6.0
+optuna-integration>=3.6.0
+plotly>=5.18.0
+kaleido>=0.2.1
+
 wandb~=0.19.10
 chardet
 trl~=0.17.0
