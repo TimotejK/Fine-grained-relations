@@ -5,14 +5,7 @@ import numpy as np
 import torch
 
 import wandb
-from transformers import AutoTokenizer
 
-from data_loaders.dataset import TimelineDataset
-from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
-from data_loaders.preprocessing import preprocess
-from evaluation.evaluate_llm_prompting import evaluate_all_llms
-from models import BertBasedModel
-from models.model_config import ModelConfig
 
 
 def main():
@@ -21,9 +14,9 @@ def main():
     parser.add_argument(
         "--script",
         type=str,
-        choices=["train_default_bert_model", "train_bert_model", "preprocess", "finetune_llm", "prompting_llm",
-                 "train_lstm_model", "train_time_finder", "finetuning_hyperparameter_search"],
-        help="The script to run. Currently supported: train_bert_model, preprocess, finetune_llm, prompting_llm"
+        choices=["train_default_bert_model", "train_bert_model", "preprocess", "finetune_llm", "finetune_rag_llm", "prompting_llm",
+                 "train_lstm_model", "train_time_finder", "finetuning_hyperparameter_search", "evaluate_rag_llm"],
+        help="The script to run. Currently supported: train_bert_model, preprocess, finetune_llm, finetune_rag_llm, prompting_llm, evaluate_rag_llm"
     )
     parser.add_argument(
         "--model",
@@ -38,6 +31,9 @@ def main():
     wandb.login(key=os.getenv("WANDB_API_KEY"))
     # Execute the appropriate script based on the argument
     if args.script == "preprocess":
+        from data_loaders.load_i2b2_data_updated import load_i2b2_absolute_data
+        from data_loaders.preprocessing import preprocess
+
         # start ollama on hpc
         import threading
         import subprocess
@@ -70,6 +66,7 @@ def main():
         results = train_timeline_model()
         print(f"Training completed. Final results: {results}")
     elif args.script == "train_bert_model":
+        from models.model_config import ModelConfig
         from train import train_bert_model
         from train.train_bert_model import train_and_evaluate_model_with_parameters
         print("Running train_bert_model...")
@@ -156,12 +153,27 @@ def main():
     if args.script == "finetune_llm":
         from llm_finetuning.finetuning import finetune_on_i2b2
         finetune_on_i2b2(args.model)
+    if args.script == "finetune_rag_llm":
+        from rag_llm_approach import rag_finetuning_pipeline
+        from types import SimpleNamespace
+
+        rag_args = SimpleNamespace(
+            mode="train",
+            output_dir="rag_llm_approach/rag_finetuned_model_i2b2_annotation_dataset",
+            batch_size=1,
+            dataset_path="rag_llm_approach/rag_finetuning_dataset.json",
+            model_name="unsloth/gemma-3-12b-it-unsloth-bnb-4bit",
+            epochs=3,
+            max_seq_length=2048
+        )
+        rag_finetuning_pipeline.main(rag_args)
 
     if args.script == "finetuning_hyperparameter_search":
         from llm_finetuning import hyperparameter_tuning
         hyperparameter_tuning.main()
 
     if args.script == "prompting_llm":
+        from evaluation.evaluate_llm_prompting import evaluate_all_llms
         # start ollama on hpc
         import threading
         import subprocess
@@ -175,6 +187,10 @@ def main():
         subprocess.run(["ollama", "pull", "gemma3:27b"])
 
         evaluate_all_llms()
+
+    if args.script == "evaluate_rag_llm":
+        from rag_llm_approach.rag_absolute_time_extraction import run_all_configurations
+        run_all_configurations(max_examples=None)
 
 
 if __name__ == "__main__":

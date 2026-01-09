@@ -169,19 +169,27 @@ def evaluate_all_llms():
     # predictor = EventTimePredictorSingle(model, use_structured_response=True)
     # evaluate_llm_prompting(predictor, model_id="local_gemma_individual_structured")
 
-    # model = local_llm.OllamaModel(model_name="gemma3:27b")
-    # predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=True)
-    # evaluate_llm_prompting_batch_model(predictor, model_id="local_gemma_batch_structured_absolute")
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    model = OpenAIModel(api_key=api_key)
+    model = local_llm.OllamaModel(model_name="gemma3:27b")
     predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=True)
-    evaluate_llm_prompting_batch_model(predictor, model_id="chatgpt_batch_structured_absolute")
+    evaluate_llm_prompting_batch_model(predictor, model_id="gemma3_27b_batch_structured_absolute")
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    model = OpenAIModel(api_key=api_key)
     predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=False)
-    evaluate_llm_prompting_batch_model(predictor, model_id="chatgpt_batch_structured_relative")
+    evaluate_llm_prompting_batch_model(predictor, model_id="gemma3_27b_batch_structured_relative")
+
+    predictor = EventTimePredictorSingle(model, use_structured_response=False)
+    evaluate_llm_prompting(predictor, model_id="gemma3_27b_individual_unstructured")
+    predictor = EventTimePredictorSingle(model, use_structured_response=True)
+    evaluate_llm_prompting(predictor, model_id="gemma3_27b_individual_structured")
+
+    # api_key = os.getenv("OPENAI_API_KEY")
+    # model = OpenAIModel(api_key=api_key)
+    # predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=True)
+    # evaluate_llm_prompting_batch_model(predictor, model_id="gpt41_batch_structured_absolute")
+    #
+    # api_key = os.getenv("OPENAI_API_KEY")
+    # model = OpenAIModel(api_key=api_key)
+    # predictor = EventTimePredictorBatch(model, use_structured_response=True, use_absolute_times=False)
+    # evaluate_llm_prompting_batch_model(predictor, model_id="gpt41_batch_structured_relative")
 
 
 if __name__ == '__main__':
