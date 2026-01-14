@@ -6,6 +6,7 @@ os.environ['TORCHDYNAMO_DISABLE'] = '1'
 import json
 import pandas as pd
 import torch
+from rag_llm_approach.rag_config import RAGConfig, FULL_RAG
 
 # Disable torch._dynamo to avoid issues with dynamic imports and debugging
 try:
@@ -71,31 +72,364 @@ class RAGTemporalExtractor:
             print(f"Error loading model: {e}")
             raise
 
+    def _tokenize_text(self, text, add_special_tokens=False):
+        """
+        Tokenize text handling both Gemma3Processor and standard tokenizers.
+        Returns a list of token IDs.
+        """
+        try:
+            # Try to access nested tokenizer (for processors)
+            if hasattr(self.tokenizer, 'tokenizer'):
+                return self.tokenizer.tokenizer.encode(text, add_special_tokens=add_special_tokens)
+            else:
+                # Use processor/tokenizer directly with return_tensors='pt'
+                tokenized = self.tokenizer(text, add_special_tokens=add_special_tokens, return_tensors="pt")
+                return tokenized['input_ids'][0].tolist()
+        except Exception as e:
+            print(f"Warning: Tokenization error: {e}. Estimating token count.")
+            # Fallback: rough estimation (4 chars per token)
+            return list(range(len(text) // 4))
+
+    def _reduce_rag_context(self, rag_context, max_timelines):
+        """
+        Reduce RAG context to keep only the first N timelines.
+        Always preserves DURATION REFERENCE section.
+        Returns reduced RAG context string.
+        """
+        if not rag_context or max_timelines <= 0:
+            return ""
+
+        lines = rag_context.split('\n')
+        reduced_lines = []
+        timeline_count = 0
+        in_timeline = False
+        in_duration_reference = False
+
+        for line in lines:
+            # Check if this is DURATION REFERENCE section (always keep)
+            if line.strip().startswith("DURATION REFERENCE"):
+                in_duration_reference = True
+                reduced_lines.append(line)
+            elif in_duration_reference:
+                # Keep all lines in DURATION REFERENCE section
+                reduced_lines.append(line)
+            # Check if this is a timeline header
+            elif line.strip().startswith("Timeline ") and "from document" in line:
+                timeline_count += 1
+                if timeline_count <= max_timelines:
+                    in_timeline = True
+                    reduced_lines.append(line)
+                else:
+                    in_timeline = False
+            elif in_timeline or timeline_count == 0:
+                # Keep line if we're in an included timeline or before any timeline
+                reduced_lines.append(line)
+
+        return '\n'.join(reduced_lines)
+
+    def _truncate_prompt_intelligently(self, prompt):
+        """
+        Intelligently truncate the prompt if it's too long, preserving important parts.
+        Uses a progressive truncation approach in a while loop.
+
+        Truncation strategy (in order):
+        1. Try full prompt (all RAG timelines)
+        2. Reduce RAG to 2 timelines
+        3. Reduce RAG to 1 timeline
+        4. Remove RAG entirely
+        5. Progressively truncate medical document
+
+        Important parts (in order of preservation priority):
+        1. Instructions and task description (always preserved)
+        2. Event mention with surrounding context (always preserved)
+        3. RAG context (reduced progressively)
+        4. Start and end of the medical document (truncated last)
+
+        Returns: truncated prompt that fits within max_seq_length
+        """
+        # Reserve tokens for generation (128) and some buffer for chat template
+        max_prompt_tokens = self.max_seq_length - 128 - 30
+
+        # First, try the full prompt without truncation
+        current_prompt = prompt
+        truncation_level = 0
+        rag_reduction_applied = None  # Track RAG reduction: None, 2, 1, 0
+
+        while True:
+            # Format and tokenize to check length
+            messages = [{"role": "user", "content": current_prompt}]
+            formatted_prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            # Tokenize to check length
+            tokens = self._tokenize_text(formatted_prompt, add_special_tokens=False)
+
+            # Check if it fits
+            if len(tokens) <= max_prompt_tokens:
+                if truncation_level > 0 or rag_reduction_applied is not None:
+                    msg = f"Prompt fits after "
+                    if rag_reduction_applied is not None:
+                        if rag_reduction_applied == 0:
+                            msg += "removing RAG context"
+                        else:
+                            msg += f"reducing RAG to {rag_reduction_applied} timeline(s)"
+                    if truncation_level > 0:
+                        msg += f"{' and' if rag_reduction_applied is not None else ''} truncation level {truncation_level}"
+                    msg += f" ({len(tokens)} tokens)"
+                    print(msg)
+                return current_prompt
+
+            # Need to truncate
+            if truncation_level == 0 and rag_reduction_applied is None:
+                print(f"Prompt too long ({len(tokens)} > {max_prompt_tokens}). Starting RAG reduction...")
+            else:
+                print(f"Still too long ({len(tokens)} tokens). Trying next strategy...")
+
+            # Parse the prompt to identify important sections
+            context_start_marker = "Context (target event marked with <TARGET> tags):"
+            task_marker = "\nTask: Predict the absolute start and end times"
+
+            # RAG context markers - these appear AFTER the medical document, BEFORE task
+            rag_markers = [
+                "Relevant patient timelines with similar events:",
+                "Relevant knowledge base entries about similar events:",
+                "No similar events found in patient timelines"
+            ]
+
+            # Split prompt into sections
+            parts = prompt.split(context_start_marker)
+            if len(parts) != 2:
+                # Fallback: simple progressive truncation
+                print("Warning: Could not parse prompt structure, using simple progressive truncation")
+                current_prompt = self._simple_progressive_truncate(prompt, max_prompt_tokens, truncation_level)
+                if truncation_level > 10:
+                    print("Warning: Reached maximum truncation level, returning best effort")
+                    return current_prompt
+                continue
+
+            header = parts[0] + context_start_marker  # Instructions only
+            remainder = parts[1]  # Contains: Medical doc + RAG context + Task
+
+            # Split remainder to separate from task
+            task_parts = remainder.split(task_marker)
+            if len(task_parts) != 2:
+                print("Warning: Could not find task section, using simple progressive truncation")
+                current_prompt = self._simple_progressive_truncate(prompt, max_prompt_tokens, truncation_level)
+                if truncation_level > 10:
+                    print("Warning: Reached maximum truncation level, returning best effort")
+                    return current_prompt
+                continue
+
+            # The part before task contains: Medical doc + RAG context
+            before_task = task_parts[0].strip()
+            task_section = task_marker + task_parts[1]
+
+            # Extract RAG context which appears AFTER the medical document
+            rag_context_original = ""
+            medical_context = before_task
+
+            # Check if RAG context exists (appears after medical doc, before task)
+            for rag_marker in rag_markers:
+                if rag_marker in before_task:
+                    # Split into medical context and RAG context
+                    split_parts = before_task.split(rag_marker, 1)
+                    medical_context = split_parts[0].strip()
+                    rag_context_original = "\n" + rag_marker + "\n" + split_parts[1].strip()
+                    break
+
+            # Strategy: Try RAG reduction before document truncation
+            # Levels: None (full RAG) -> 2 timelines -> 1 timeline -> 0 timelines -> doc truncation
+            rag_context = rag_context_original
+
+            if rag_context_original and truncation_level == 0:
+                # First attempt with full RAG - just iterate to try reduction
+                truncation_level += 1
+                continue
+            elif rag_context_original and truncation_level == 1:
+                # Try reducing to 2 timelines
+                print("Reducing RAG context to 2 timelines...")
+                rag_context = self._reduce_rag_context(rag_context_original, 2)
+                rag_reduction_applied = 2
+                truncation_level += 1
+                current_prompt = header + " " + medical_context + rag_context + "\n\n" + task_section
+                continue
+            elif rag_context_original and truncation_level == 2:
+                # Try reducing to 1 timeline
+                print("Reducing RAG context to 1 timeline...")
+                rag_context = self._reduce_rag_context(rag_context_original, 1)
+                rag_reduction_applied = 1
+                truncation_level += 1
+                current_prompt = header + " " + medical_context + rag_context + "\n\n" + task_section
+                continue
+            elif rag_context_original and truncation_level == 3:
+                # Try removing RAG entirely (full medical document, no RAG)
+                print("Removing RAG context entirely, keeping full medical document...")
+                rag_context = ""
+                rag_reduction_applied = 0
+                current_prompt = header + " " + medical_context + rag_context + "\n\n" + task_section
+                truncation_level += 1
+                continue
+
+            # If we get here at level 4 or higher, RAG removal didn't help enough
+            # Now start document truncation (only if level >= 4)
+            if truncation_level < 4:
+                # This shouldn't happen, but safeguard
+                truncation_level = 4
+
+            # Print message when starting document truncation
+            if truncation_level == 4:
+                print("Full document with no RAG still too long. Starting document truncation...")
+
+            doc_truncation_level = truncation_level - 3  # Level 4 becomes doc truncation 1
+
+            # Find the target event in the medical context (after removing RAG)
+            target_start = medical_context.find("<TARGET>")
+            target_end = medical_context.find("</TARGET>") + len("</TARGET>")
+
+            if target_start == -1 or target_end == -1:
+                print("Warning: Could not find <TARGET> markers, using simple progressive truncation")
+                current_prompt = self._simple_progressive_truncate(prompt, max_prompt_tokens, truncation_level)
+                if truncation_level > 10:
+                    print("Warning: Reached maximum truncation level, returning best effort")
+                    return current_prompt
+                continue
+
+            # Calculate how much space we have
+            # RAG context is preserved, so count it with fixed tokens
+            header_tokens = self._tokenize_text(header, add_special_tokens=False)
+            task_tokens = self._tokenize_text(task_section, add_special_tokens=False)
+            rag_tokens = self._tokenize_text(rag_context, add_special_tokens=False) if rag_context else []
+            fixed_tokens = len(header_tokens) + len(task_tokens) + len(rag_tokens)
+
+            available_for_context = max_prompt_tokens - fixed_tokens
+
+            if available_for_context < 100:
+                print(f"Warning: Very little space for medical context ({available_for_context} tokens available)")
+                # Even with minimal space, we continue
+                available_for_context = max(100, available_for_context)
+
+            # Preserve important parts with progressive truncation of medical document
+            # Use doc_truncation_level (which starts at 1 when we reach level 4)
+            context_before_target = medical_context[:target_start]
+            target_text = medical_context[target_start:target_end]
+            context_after_target = medical_context[target_end:]
+
+            # Calculate allocation based on doc_truncation_level
+            # Start: 20% -> 15% -> 10% -> 5% -> 0%
+            # Target: 60% -> 65% -> 70% -> 75% -> 80%
+            # End: 20% -> 15% -> 10% -> 5% -> 0%
+            chars_per_token = 4  # Rough estimate
+            available_chars = max(available_for_context * chars_per_token, 400)  # Minimum 400 chars
+
+            start_percent = max(0.20 - (truncation_level * 0.05), 0)
+            end_percent = max(0.20 - (truncation_level * 0.05), 0)
+            target_percent = min(1.0 - 0.40 + (truncation_level * 0.05), 1.0)
+
+            start_chars = int(available_chars * start_percent)
+            target_chars = int(available_chars * target_percent)
+            end_chars = int(available_chars * end_percent)
+
+            # Extract sections
+            doc_start = context_before_target[:start_chars] if start_chars > 0 else ""
+            doc_end = context_after_target[-end_chars:] if end_chars > 0 else ""
+
+            # For target context, preserve surrounding text
+            target_context_chars = target_chars // 2
+            target_before = context_before_target[-target_context_chars:] if len(context_before_target) > target_context_chars else context_before_target
+            target_after = context_after_target[:target_context_chars] if len(context_after_target) > target_context_chars else context_after_target
+
+            # Reconstruct truncated medical context
+            truncated_context = ""
+
+            # Add start of document if we're keeping it
+            if doc_start and doc_start != target_before:
+                truncated_context += doc_start
+                if len(context_before_target) > start_chars:
+                    truncated_context += "\n[...truncated...]\n"
+
+            # Add context around target (always preserved)
+            truncated_context += target_before + target_text + target_after
+
+            # Add end of document if we're keeping it
+            if doc_end and doc_end != target_after:
+                if len(context_after_target) > end_chars:
+                    truncated_context += "\n[...truncated...]\n"
+                truncated_context += doc_end
+
+            # Reconstruct full prompt with RAG context after medical document, before task
+            # Structure: header + medical_context + rag_context + task_section
+            current_prompt = header + " " + truncated_context + rag_context + "\n\n" + task_section
+
+            # Increment for next iteration
+            truncation_level += 1
+
+            # Safety check: if we've tried too many times, give up
+            if truncation_level > 15:
+                print("Warning: Reached maximum truncation level (15), returning best effort")
+                return current_prompt
+
+
+    def _simple_progressive_truncate(self, prompt, max_tokens, truncation_level):
+        """
+        Fallback: simple progressive truncation from the middle of the prompt.
+        Each level removes more content from the middle.
+        """
+        chars_per_token = 4  # Rough estimate
+        max_chars = max_tokens * chars_per_token
+
+        if len(prompt) <= max_chars:
+            return prompt
+
+        # Progressively reduce the middle section
+        # Level 1: Keep 40% start, 40% end
+        # Level 2: Keep 35% start, 35% end
+        # Level 3: Keep 30% start, 30% end
+        # etc.
+        keep_percent = max(0.40 - (truncation_level - 1) * 0.05, 0.10)
+
+        keep_start = int(max_chars * keep_percent)
+        keep_end = int(max_chars * keep_percent)
+
+        truncated = prompt[:keep_start] + "\n[...content truncated...]\n" + prompt[-keep_end:]
+        return truncated
+
     def call_llm(self, prompt):
         """Call the local Gemma 3 12B model for inference"""
         try:
+            # Apply intelligent truncation if needed
+            truncated_prompt = self._truncate_prompt_intelligently(prompt)
+
             # Format prompt for Gemma chat template
-            messages = [{"role": "user", "content": prompt}]
+            messages = [{"role": "user", "content": truncated_prompt}]
             formatted_prompt = self.tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True
             )
 
-            # Tokenize and generate
+            # Tokenize and generate (no truncation here since we already handled it)
             inputs = self.tokenizer(
                 text=formatted_prompt,
                 return_tensors="pt",
-                truncation=True,
-                max_length=self.max_seq_length
+                truncation=False,  # We already truncated intelligently
+                max_length=None
             ).to(self.model.device)
+
+            # Verify input length
+            input_length = inputs['input_ids'].shape[1]
+            if input_length > self.max_seq_length:
+                print(f"Warning: Input still too long ({input_length} > {self.max_seq_length}), applying hard truncation")
+                inputs['input_ids'] = inputs['input_ids'][:, :self.max_seq_length]
+                inputs['attention_mask'] = inputs['attention_mask'][:, :self.max_seq_length]
 
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=256,
-                    temperature=0.7,
-                    do_sample=True,
+                    max_new_tokens=128,
+                    temperature=0.1,     # Reduced from 0.7 for determinism
+                    do_sample=False,     # Greedy decoding
                     pad_token_id=self.tokenizer.eos_token_id,
                     use_cache=True
                 )
@@ -138,6 +472,7 @@ class RAGTemporalExtractor:
             }
 
         except Exception as e:
+            print(f"Parse error: {e}")
             return {"start": None, "end": None, "parse_error": str(e)}
 
 class OpenAITemporalExtractor:
@@ -239,12 +574,19 @@ class OpenAITemporalExtractor:
             return {"start": None, "end": None, "parse_error": str(e)}
 
 class GeminiTemporalExtractor:
-    """Temporal extractor using Google Gemini API"""
+    """Temporal extractor using Google Gemini API with rate limiting"""
 
-    def __init__(self, model="gemini-3-flash-preview", cache_dir="cache_gemini"):
+    def __init__(self, model="gemini-3-flash-preview", cache_dir="cache_gemini", requests_per_minute=15):
         self.model = model
         self.cache_dir = cache_dir
+        self.requests_per_minute = requests_per_minute
         os.makedirs(self.cache_dir, exist_ok=True)
+
+        # Rate limiting setup
+        import time
+        from collections import deque
+        self.request_times = deque()
+        self.time = time
 
         # Import Gemini
         try:
@@ -254,6 +596,7 @@ class GeminiTemporalExtractor:
                 raise ValueError("GEMINI_API_KEY environment variable not set")
             self.client = genai.Client(api_key=api_key)
             print(f"Gemini API initialized with model: {model}")
+            print(f"Rate limiting: {requests_per_minute} requests per minute")
         except ImportError:
             raise ImportError("Google GenAI library not installed. Install with: pip install google-genai")
 
@@ -274,6 +617,28 @@ class GeminiTemporalExtractor:
         with open(cache_path, "w") as f:
             json.dump(response, f, indent=2)
 
+    def _wait_for_rate_limit(self):
+        """Wait if necessary to respect rate limiting"""
+        current_time = self.time.time()
+
+        # Remove timestamps older than 60 seconds
+        while self.request_times and current_time - self.request_times[0] > 60:
+            self.request_times.popleft()
+
+        # If we've made too many requests in the last minute, wait
+        if len(self.request_times) >= self.requests_per_minute:
+            sleep_time = 60 - (current_time - self.request_times[0]) + 0.1  # Add small buffer
+            if sleep_time > 0:
+                print(f"Rate limit reached. Waiting {sleep_time:.1f} seconds...")
+                self.time.sleep(sleep_time)
+                # Clear old timestamps after waiting
+                current_time = self.time.time()
+                while self.request_times and current_time - self.request_times[0] > 60:
+                    self.request_times.popleft()
+
+        # Record this request
+        self.request_times.append(current_time)
+
     def call_llm(self, prompt):
         """Call Gemini API for inference"""
         try:
@@ -283,6 +648,9 @@ class GeminiTemporalExtractor:
             if cached_response:
                 return cached_response
 
+            # Wait for rate limiting before making API call
+            self._wait_for_rate_limit()
+
             # Make API call
             response = self.client.models.generate_content(
                 model=self.model,
@@ -290,11 +658,25 @@ class GeminiTemporalExtractor:
                 config={
                     "response_mime_type": "application/json",
                     "temperature": 0.7,
-                    "max_output_tokens": 256
+                    "max_output_tokens": 2048
                 }
             )
 
+            # Check if response was truncated
+            if response.candidates and response.candidates[0].finish_reason.name == 'MAX_TOKENS':
+                print(f"Warning: Response truncated due to MAX_TOKENS limit")
+                return {"start": None, "end": None, "error": "Response truncated - MAX_TOKENS reached"}
+
             response_text = response.text
+
+            # Check if response text is empty or None
+            if not response_text:
+                error_msg = "Empty response from Gemini API"
+                if response.candidates:
+                    finish_reason = response.candidates[0].finish_reason.name
+                    error_msg += f" (finish_reason: {finish_reason})"
+                print(f"Error: {error_msg}")
+                return {"start": None, "end": None, "error": error_msg}
 
             # Parse the response
             parsed = self.parse_temporal_response(response_text)
@@ -306,6 +688,9 @@ class GeminiTemporalExtractor:
 
         except Exception as e:
             print(f"Error in Gemini API call: {e}")
+            # Add more detailed error information
+            import traceback
+            traceback.print_exc()
             return {"start": None, "end": None, "error": str(e)}
 
     def parse_temporal_response(self, response):
@@ -577,10 +962,12 @@ def generate_ground_truth_response(row):
             "end": end_time.isoformat()
         }
 
-        return json.dumps(response)
+        # Return with consistent formatting (no extra spaces)
+        return json.dumps(response, separators=(',', ':'))
 
     except Exception as e:
-        return json.dumps({"start": "1900-01-01T00:00:00", "end": "1900-01-01T00:00:00"})
+        # Consistent fallback format
+        return '{"start":"1900-01-01T00:00:00","end":"1900-01-01T00:00:00"}'
 
 def generate_finetuning_dataset(use_timelines=False, no_rag=False, timeline_file='rag_llm_approach/patient_timelines.json'):
     """Generate QA pairs for fine-tuning the RAG model"""
@@ -876,17 +1263,18 @@ def evaluate_rag_model_performance(results, model_id="rag_model", use_finetuned=
         print("No valid predictions found for evaluation")
         return {}
 
-def run_all_configurations(timeline_file='rag_llm_approach/i2b2_patient_timelines.json', max_examples=None, subsample_size=200, random_seed=42):
+def run_all_configurations(timeline_file='rag_llm_approach/i2b2_patient_timelines.json', max_examples=None, subsample_size=1000, random_seed=42):
     """
-    Run inference and evaluation for all configurations:
-    1. No RAG + Base Model
-    2. KB RAG + Base Model
-    3. Timeline RAG + Base Model
-    4. No RAG + Finetuned Model
-    5. KB RAG + Finetuned Model
-    6. Timeline RAG + Finetuned Model
-    7. Timeline RAG + OpenAI GPT-4 (subsample)
-    8. Timeline RAG + Gemini (subsample)
+    Run inference and evaluation for all configurations including RAG ablation studies.
+
+    Configurations include:
+    1. No RAG + Base/Finetuned Model
+    2. KB RAG + Base/Finetuned Model
+    3. Timeline RAG + Base/Finetuned Model (Full information)
+    4. Timeline RAG + Base/Finetuned Model (Duration only)
+    5. Timeline RAG + Base/Finetuned Model (Duration + Time intervals)
+    6. Timeline RAG + Base/Finetuned Model (No duration)
+    7. Timeline RAG + OpenAI/Gemini (subsample)
 
     Args:
         timeline_file: Path to patient timelines JSON file
@@ -895,33 +1283,47 @@ def run_all_configurations(timeline_file='rag_llm_approach/i2b2_patient_timeline
         random_seed: Random seed for reproducible subsampling
     """
     configurations = [
-        {'name': 'Timeline RAG + OpenAI GPT-5.2', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'openai', 'use_subsample': True},
-        {'name': 'No RAG + OpenAI GPT-5.2', 'use_finetuned': False, 'use_timelines': False, 'no_rag': True, 'model_type': 'openai', 'use_subsample': True},
-        # {'name': 'Timeline RAG + Gemini', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'gemini', 'use_subsample': True},
-        {'name': 'Timeline RAG + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'local'},
-        {'name': 'Timeline RAG + Finetuned Gemma 3 12B', 'use_finetuned': True, 'use_timelines': True, 'no_rag': False, 'model_type': 'local'},
-        {'name': 'No RAG + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': False, 'no_rag': True, 'model_type': 'local'},
-        # {'name': 'KB RAG + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': False, 'no_rag': False, 'model_type': 'local'},
-        {'name': 'No RAG + Finetuned Gemma 3 12B', 'use_finetuned': True, 'use_timelines': False, 'no_rag': True, 'model_type': 'local'},
-        # {'name': 'KB RAG + Finetuned Gemma 3 12B', 'use_finetuned': True, 'use_timelines': False, 'no_rag': False, 'model_type': 'local'},
-        # API-based models (with subsampling to reduce costs)
+        # === BASE CONFIGURATIONS ===
+        # {'name': 'No RAG + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': False, 'no_rag': True, 'model_type': 'local'},
+        {'name': 'Timeline RAG (Full) + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'full'},
+        {'name': 'Timeline RAG (Full) + Finetuned Gemma 3 12B', 'use_finetuned': True, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'full'},
+
+        # === ABLATION STUDY: DURATION INFORMATION ===
+        {'name': 'Timeline RAG (Duration Only) + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'duration_only'},
+        {'name': 'Timeline RAG (Duration + Intervals) + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'duration_with_intervals'},
+        {'name': 'Timeline RAG (No Duration) + Base Gemma 3 12B', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'no_duration'},
+
+        # === FINETUNED ABLATION ===
+        {'name': 'Timeline RAG (Duration Only) + Finetuned Gemma 3 12B', 'use_finetuned': True, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'duration_only'},
+        {'name': 'Timeline RAG (Duration + Intervals) + Finetuned Gemma 3 12B', 'use_finetuned': True, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'duration_with_intervals'},
+        {'name': 'Timeline RAG (No Duration) + Finetuned Gemma 3 12B', 'use_finetuned': True, 'use_timelines': True, 'no_rag': False, 'model_type': 'local', 'rag_config': 'no_duration'},
+
+        # === API MODELS (commented out to avoid costs) ===
+        # {'name': 'Timeline RAG + OpenAI GPT-5.2', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'openai', 'use_subsample': True, 'rag_config': 'full'},
+        # {'name': 'Timeline RAG + Gemini', 'use_finetuned': False, 'use_timelines': True, 'no_rag': False, 'model_type': 'gemini', 'use_subsample': True, 'rag_config': 'full'},
     ]
 
     all_results = {}
 
     print("="*80)
-    print("RUNNING COMPREHENSIVE EVALUATION OF ALL CONFIGURATIONS")
+    print("RUNNING COMPREHENSIVE EVALUATION WITH RAG ABLATION STUDY")
     print("="*80)
     print(f"Total configurations to test: {len(configurations)}")
+    print("\nRAG Configuration Options:")
+    print("  - full: All information (baseline)")
+    print("  - duration_only: Only duration information from similar events")
+    print("  - duration_with_intervals: Durations + time intervals between events")
+    print("  - no_duration: All information except durations")
     if subsample_size:
-        print(f"API models will use random subsample of {subsample_size} examples (seed={random_seed})")
+        print(f"\nAPI models will use random subsample of {subsample_size} examples (seed={random_seed})")
     print("="*80)
 
     for config_idx, config in enumerate(configurations, 1):
         print(f"\n{'='*80}")
         print(f"CONFIGURATION {config_idx}/{len(configurations)}: {config['name']}")
         print(f"{'='*80}")
-        print(f"Settings: model_type={config.get('model_type', 'local')}, use_timelines={config['use_timelines']}, no_rag={config['no_rag']}")
+        rag_config_name = config.get('rag_config', 'full')
+        print(f"Settings: model_type={config.get('model_type', 'local')}, use_timelines={config['use_timelines']}, no_rag={config['no_rag']}, rag_config={rag_config_name}")
         print(f"{'='*80}\n")
 
         try:
@@ -974,7 +1376,9 @@ def run_all_configurations(timeline_file='rag_llm_approach/i2b2_patient_timeline
             results = []
             timeline_stats = []  # Track timeline retrieval statistics
 
+            i = 0
             for idx, row in df.iterrows():
+                i += 1
                 try:
                     # Extract event string from text using start_char and end_char
                     event_string = row['text'][row['start_char']:row['end_char']]
@@ -1051,10 +1455,10 @@ def run_all_configurations(timeline_file='rag_llm_approach/i2b2_patient_timeline
                     })
 
                     if idx % 10 == 0:
-                        print(f"Processed {idx}/{len(df)} test examples")
+                        print(f"Processed {i}/{len(df)} test examples")
 
                 except Exception as e:
-                    print(f"Error processing test row {idx}: {e}")
+                    print(f"Error processing test row {i}: {e}")
                     continue
 
             # Save results
@@ -1413,4 +1817,4 @@ def main():
     print(f"{'='*60}")
 
 if __name__ == '__main__':
-    main()
+    run_all_configurations()

@@ -1,0 +1,1 @@
+python /home/timotej/Documents/projekti/dr/Fine-grained-relations/rag_llm_approach/rag_finetuning_pipeline.py --mode train --output_dir rag_llm_approach/rag_finetuned_model_i2b2_annotation_dataset --batch_size 1 --dataset_path rag_llm_approach/rag_finetuning_dataset.json
